@@ -4,7 +4,7 @@
 * image_write
 *
 * Author: Sil van de Leemput
-* email: sil.vandeleemput@radboudumcn.nl
+* email: sil.vandeleemput@radboudumc.nl
 */
 
 package metaio
@@ -24,12 +24,12 @@ import "core:compress/zlib"
 import "core:bytes"
 
 
-ObjectType :: enum {
+ObjectType :: enum u8 {
     Image
 }
 
 
-ElementType :: enum {
+ElementType :: enum u8 {
    MET_NONE,
    MET_ASCII_CHAR,
    MET_CHAR,
@@ -98,13 +98,13 @@ MET_ValueTypeSize :: [ElementType]u8 {
 Image :: struct {
     ObjectType: ObjectType,
     NDims: u8,
-    CompressedData: bool,
-    CompressedDataSize: u64,
-    BinaryData: bool,
-    BinaryDataByteOrderMSB: bool,
-    DimSize: []u16,
     ElementType: ElementType,
     ElementNumberOfChannels: u8,
+    CompressedData: bool,
+    BinaryData: bool,
+    BinaryDataByteOrderMSB: bool,
+    CompressedDataSize: u64,
+    DimSize: []u16,
     Offset: []f64,
     ElementSpacing: []f64,
     TransformMatrix: []f64,
@@ -161,6 +161,17 @@ image_required_data_size :: proc(img: Image) -> int {
 }
 
 
+image_init :: proc(img: ^Image) {
+    // TODO init this with NDims, and allocate all required memory here etc... ???
+    img.ObjectType = .Image
+    img.ElementNumberOfChannels = 1
+    img.NDims = 3
+    img.BinaryData = true
+    img.BinaryDataByteOrderMSB = false
+    img.ElementType = .MET_NONE
+}
+
+
 image_read :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
     // open file for reading
     fd := os.open(filename, os.O_RDONLY) or_return
@@ -178,7 +189,7 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
     )
 
     // set default values
-    img.ElementNumberOfChannels = 1
+    image_init(&img)
 
     // read header information first
     bytes_read := 0
@@ -236,7 +247,6 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
                 cloned_key := strings.clone(key, allocator=allocator) or_return
                 cloned_value := strings.clone(value, allocator=allocator) or_return
                 meta_data_map[cloned_key] = cloned_value
-                //fmt.printfln("MAP_ASSIGN: %s, %s : %v", key, value, meta_data_map)
                 img.MetaData = meta_data_map
         }
     }
@@ -435,6 +445,14 @@ image_destroy :: proc(img: Image, allocator:=context.allocator) {
     delete(img.MetaData)
     delete(img.Data, allocator=allocator)
 }
+
+
+main :: proc()
+{
+    input_test_image_file := `.\test\test_001.mhd`
+    img, err := image_read(input_test_image_file, allocator=context.allocator)
+}
+
 
 
 when ODIN_DEBUG {
