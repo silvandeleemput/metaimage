@@ -1,6 +1,7 @@
 /* Odin package for reading and writing ITK MetaIO Image files
 *
-*
+* image_read
+* image_write
 *
 * Author: Sil van de Leemput
 * email: sil.vandeleemput@radboudumcn.nl
@@ -122,7 +123,7 @@ Error :: union {
 }
 
 
-create_f64_array :: proc(elements_string : string, n_elements: int, allocator:= context.allocator) -> (a: []f64, error: Error) {
+create_f64_array :: proc(elements_string: string, n_elements: int, allocator:= context.allocator) -> (a: []f64, error: Error) {
     sub_values := strings.split(s=elements_string, sep=" ", allocator=context.temp_allocator) or_return
     arr := make([]f64, n_elements, allocator=allocator) or_return
     assert(len(sub_values) == n_elements)
@@ -135,7 +136,7 @@ create_f64_array :: proc(elements_string : string, n_elements: int, allocator:= 
 }
 
 
-create_u16_array :: proc(elements_string : string, n_elements: int, allocator:= context.allocator) -> (a: []u16, error: Error) {
+create_u16_array :: proc(elements_string: string, n_elements: int, allocator:= context.allocator) -> (a: []u16, error: Error) {
     sub_values := strings.split(s=elements_string, sep=" ", allocator=context.temp_allocator) or_return
     arr := mem.make([]u16, n_elements, allocator=allocator) or_return
     assert(len(sub_values) == int(n_elements))
@@ -154,13 +155,13 @@ image_required_data_size :: proc(img: Image) -> int {
     for val in img.DimSize[1:] {
         total_bytes_required = total_bytes_required * int(val)
     }
-    v := MET_ValueTypeSize
-    total_bytes_required = total_bytes_required * int(v[img.ElementType]) * int(img.ElementNumberOfChannels)
+    value_type_size := MET_ValueTypeSize
+    total_bytes_required = total_bytes_required * int(value_type_size[img.ElementType]) * int(img.ElementNumberOfChannels)
     return total_bytes_required
 }
 
 
-image_load :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
+image_read :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
     // open file for reading
     fd := os.open(filename, os.O_RDONLY) or_return
     defer os.close(fd)
@@ -243,27 +244,36 @@ image_load :: proc(filename: string, allocator := context.allocator) -> (img: Im
     // compute required total memory for data buffer
     total_bytes_required := image_required_data_size(img)
 
+
     if img.ElementDataFile == "LOCAL" {
+
+        buffered_reader_read_until_eof :: proc(buffered_reader: bufio.Reader, buffer_dest: []u8) -> (err: Error) {
+            // pretty hacky approach to extract remainder read data in buffer after the newline and copy to data_encoded_buffer
+            n_unprocessed_elements_in_buffer := buffered_reader.w - buffered_reader.r
+            for i in 0..<n_unprocessed_elements_in_buffer {
+                buffer_dest[i] = buffered_reader.buf[i + buffered_reader.r]
+            }
+            // read the rest of the file directly without the buffered reader
+            n := io.read(s=buffered_reader.rd, p=buffer_dest[n_unprocessed_elements_in_buffer:]) or_return
+
+            assert(n + n_unprocessed_elements_in_buffer == len(buffer_dest))
+
+            return nil
+        }
+
         if img.CompressedData {
             // use zlib to decompress
             data_buffer_size := os.file_size(fd) or_return
             data_buffer_size -= i64(bytes_read)
             data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
 
-            // TODO pretty hacky approach to extract remainder read data in buffer after the newline and copy to data_encoded_buffer
-            n_unprocessed_elements_in_buffer := buffered_reader.w - buffered_reader.r
-            for i in 0..<n_unprocessed_elements_in_buffer {
-                data_encoded_buffer[i] = buffered_reader.buf[i + buffered_reader.r]
-            }
-            // read the rest of the file directly without the buffered reader
-            n := io.read(s=reader_stream, p=data_encoded_buffer[n_unprocessed_elements_in_buffer:]) or_return
+            buffered_reader_read_until_eof(buffered_reader=buffered_reader, buffer_dest=data_encoded_buffer) or_return
 
-            assert(n + n_unprocessed_elements_in_buffer == int(data_buffer_size))
-
-            fmt.printfln("\nfound n=%d req=%d\n", n, data_buffer_size, context.temp_allocator)
-            buf: bytes.Buffer
             // TODO possible to have a stream as input for inflate???
-            err := zlib.inflate(input=data_encoded_buffer, buf=&buf, expected_output_size=total_bytes_required + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
+            // compress.Context_Memory_Input
+            buf: bytes.Buffer
+            err := zlib.inflate_from_byte_array(input=data_encoded_buffer, buf=&buf, expected_output_size=total_bytes_required + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
+
             //defer bytes.buffer_destroy(&buf) // don't destroy, keep data around...
             img.Data = buf.buf[:total_bytes_required]
         } else {
@@ -273,15 +283,7 @@ image_load :: proc(filename: string, allocator := context.allocator) -> (img: Im
             // bufio.reader_read must be called in a loop until everything is consumed, this seems suboptimal, since we know the req. size
             // It appears this is expected behavior, it reads buffer size max, it must be called multiple times until reader generates a consume error...
 
-            // TODO pretty hacky approach to extract remainder read data in buffer after the newline and copy to data_buffer
-            n_unprocessed_elements_in_buffer := buffered_reader.w - buffered_reader.r
-            for i in 0..<n_unprocessed_elements_in_buffer {
-                data_buffer[i] = buffered_reader.buf[i + buffered_reader.r]
-            }
-            // read the rest of the file directly without the buffered reader
-            n := io.read(s=reader_stream, p=data_buffer[n_unprocessed_elements_in_buffer:]) or_return
-
-            assert(n + n_unprocessed_elements_in_buffer == total_bytes_required)
+            buffered_reader_read_until_eof(buffered_reader=buffered_reader, buffer_dest=data_buffer) or_return
 
             img.Data = data_buffer[:]
         }
@@ -290,10 +292,6 @@ image_load :: proc(filename: string, allocator := context.allocator) -> (img: Im
         // try to open external file to read the data from
         file_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
         data_filename := fmt.aprintf("%s/%s", file_dir, img.ElementDataFile, allocator=context.temp_allocator)
-        if !os.exists(data_filename) {
-            //fmt.printf("Could not find %s", data_filename)
-            return img, os.General_Error.Not_Exist
-        }
         fd_data := os.open(data_filename, os.O_RDONLY) or_return
         defer os.close(fd_data)
 
@@ -305,7 +303,7 @@ image_load :: proc(filename: string, allocator := context.allocator) -> (img: Im
             encoded_input := os.read(fd=fd_data, data=data_encoded_buffer) or_return
             buf: bytes.Buffer
             // TODO possible to have a stream as input for inflate???
-            err := zlib.inflate(input=data_encoded_buffer, buf=&buf, expected_output_size=total_bytes_required + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
+            err := zlib.inflate_from_byte_array(input=data_encoded_buffer, buf=&buf, expected_output_size=total_bytes_required + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
             //defer bytes.buffer_destroy(&buf)
             img.Data = buf.buf[:total_bytes_required]
         } else {
@@ -424,57 +422,55 @@ image_write :: proc(img: Image, filename: string, compression: bool = false) -> 
 }
 
 
-image_destroy :: proc(img: Image) {
-    delete(img.DimSize)
-    delete(img.TransformMatrix)
-    delete(img.ElementSpacing)
-    delete(img.Offset)
-    delete(img.ElementDataFile)
+image_destroy :: proc(img: Image, allocator:=context.allocator) {
+    delete(img.DimSize, allocator=allocator)
+    delete(img.TransformMatrix, allocator=allocator)
+    delete(img.ElementSpacing, allocator=allocator)
+    delete(img.Offset, allocator=allocator)
+    delete(img.ElementDataFile, allocator=allocator)
     for k, v in img.MetaData {
-        delete(k)
-        delete(v)
+        delete(k, allocator=allocator)
+        delete(v, allocator=allocator)
     }
     delete(img.MetaData)
-    delete(img.Data)
+    delete(img.Data, allocator=allocator)
 }
-
-
 
 
 when ODIN_DEBUG {
 
     @(test)
-    test_image_load_compressed_mhd :: proc(t: ^testing.T) {
-        test_image_load_expected_values(t=t, test_file_name=`.\test\test_001.mhd`, compressed=true)
+    test_image_read_compressed_mhd :: proc(t: ^testing.T) {
+        test_image_read_expected_values(t=t, test_file_name=`.\test\test_001.mhd`, compressed=true)
     }
 
     @(test)
-    test_image_load_compressed_mha :: proc(t: ^testing.T) {
-        test_image_load_expected_values(t=t, test_file_name=`.\test\test_001.mha`, compressed=true)
+    test_image_read_compressed_mha :: proc(t: ^testing.T) {
+        test_image_read_expected_values(t=t, test_file_name=`.\test\test_001.mha`, compressed=true)
     }
 
     @(test)
-    test_image_load_uncompressed_mhd :: proc(t: ^testing.T) {
-        test_image_load_expected_values(t=t, test_file_name=`.\test\test_001_uncompressed.mhd`, compressed=false)
+    test_image_read_uncompressed_mhd :: proc(t: ^testing.T) {
+        test_image_read_expected_values(t=t, test_file_name=`.\test\test_001_uncompressed.mhd`, compressed=false)
     }
 
     @(test)
-    test_image_load_uncompressed_mha :: proc(t: ^testing.T) {
-        test_image_load_expected_values(t=t, test_file_name=`.\test\test_001_uncompressed.mha`, compressed=false)
+    test_image_read_uncompressed_mha :: proc(t: ^testing.T) {
+        test_image_read_expected_values(t=t, test_file_name=`.\test\test_001_uncompressed.mha`, compressed=false)
     }
 
     @(test)
     test_image_write_uncompressed_mha :: proc(t: ^testing.T) {
         input_test_image_file := `.\test\test_001.mhd`
         output_test_image_file := `.\test\tmp_test_001_write_test.mha`
-        img, err := image_load(input_test_image_file)
-        defer image_destroy(img)
+        img, err := image_read(input_test_image_file, allocator=context.allocator)
+        defer image_destroy(img, allocator=context.allocator)
         free_all(context.temp_allocator)
         write_err := image_write(img, output_test_image_file, false)
         defer if os.exists(output_test_image_file) { os.unlink(output_test_image_file) }
         testing.expect(t, os.exists(input_test_image_file), fmt.aprintf("Input test file does not exist: %s", input_test_image_file, allocator=context.temp_allocator))
         testing.expect(t, os.exists(output_test_image_file), fmt.aprintf("Output test file does not exist: %s", output_test_image_file, allocator=context.temp_allocator))
-        test_image_load_expected_values(t=t, test_file_name=output_test_image_file, compressed=false)
+        test_image_read_expected_values(t=t, test_file_name=output_test_image_file, compressed=false)
     }
 
     @(test)
@@ -482,8 +478,8 @@ when ODIN_DEBUG {
         input_test_image_file := `.\test\test_001.mhd`
         output_test_image_file := `.\test\tmp_test_001_write_test.mhd`
         output_test_image_data_file := `.\test\tmp_test_001_write_test.raw`
-        img, err := image_load(input_test_image_file)
-        defer image_destroy(img)
+        img, err := image_read(input_test_image_file, allocator=context.allocator)
+        defer image_destroy(img, allocator=context.allocator)
         free_all(context.temp_allocator)
         write_err := image_write(img, output_test_image_file, false)
         defer if os.exists(output_test_image_file) { os.unlink(output_test_image_file) }
@@ -491,14 +487,14 @@ when ODIN_DEBUG {
         testing.expect(t, os.exists(input_test_image_file), fmt.aprintf("Input test file does not exist: %s", input_test_image_file, allocator=context.temp_allocator))
         testing.expect(t, os.exists(output_test_image_file), fmt.aprintf("Output test file does not exist: %s", output_test_image_file, allocator=context.temp_allocator))
         testing.expect(t, os.exists(output_test_image_data_file), fmt.aprintf("Output test data file does not exist: %s", output_test_image_data_file, allocator=context.temp_allocator))
-        test_image_load_expected_values(t=t, test_file_name=output_test_image_file, compressed=false)
+        test_image_read_expected_values(t=t, test_file_name=output_test_image_file, compressed=false)
     }
 
 
-    test_image_load_expected_values :: proc(t: ^testing.T, test_file_name: string, compressed: bool) {
-        // TODO replace tests with simpler test files...
-        img, err := image_load(test_file_name)
-        defer image_destroy(img)
+    test_image_read_expected_values :: proc(t: ^testing.T, test_file_name: string, compressed: bool) {
+        // TODO replace tests with smaller test files...
+        img, err := image_read(test_file_name, allocator=context.allocator)
+        defer image_destroy(img, allocator=context.allocator)
         free_all(context.temp_allocator)
 
         EXPECTED_NDIMS :: 3
