@@ -17,6 +17,7 @@ import "core:testing"
 import "core:slice"
 import "core:io"
 import "core:bufio"
+import "core:compress"
 import "core:mem"
 import "core:strconv"
 import "core:path/filepath"
@@ -27,6 +28,8 @@ import "core:bytes"
 import "core:prof/spall"
 import "base:runtime"
 import "core:/sync"
+
+//import "vendor:zlib"
 
 
 ObjectType :: enum u8 {
@@ -124,7 +127,8 @@ Error :: union {
     os.General_Error,
     io.Error,
     os.Platform_Error,
-    mem.Allocator_Error
+    mem.Allocator_Error,
+    compress.Error,
 }
 
 
@@ -166,7 +170,7 @@ image_required_data_size :: proc(img: Image) -> int {
 }
 
 
-image_init :: proc(img: ^Image) {
+image_init_header :: proc(img: ^Image) {
     // TODO init this with NDims, and allocate all required memory here etc... ???
     img.ObjectType = .Image
     img.ElementNumberOfChannels = 1
@@ -177,15 +181,9 @@ image_init :: proc(img: ^Image) {
 }
 
 
-image_read :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
-    // open file for reading
-    fd := os.open(filename, os.O_RDONLY) or_return
-    defer os.close(fd)
+image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (bytes_read: int, error: Error) {
     file_buffer : [256] byte
 
-    // create a buffered io.Reader Stream
-    reader_stream : io.Reader = os.stream_from_handle(fd=fd)
-    defer io.close(reader_stream)
     buffered_reader := bufio.Reader{}
     bufio.reader_init_with_buf(
         b=&buffered_reader,
@@ -194,10 +192,10 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
     )
 
     // set default values
-    image_init(&img)
+    image_init_header(img)
 
     // read header information first
-    bytes_read := 0
+    //bytes_read := 0
     meta_data_map := make(map [string]string, allocator=allocator)
     img.MetaData = meta_data_map
     for img.ElementDataFile == "" {
@@ -255,54 +253,43 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
                 img.MetaData = meta_data_map
         }
     }
+    // Set the reader to the beginning of data stream...
+    if img.ElementDataFile == "LOCAL" {
+        io.seek(s=buffered_reader.rd, offset=i64(buffered_reader.r - buffered_reader.w), whence=.Current) or_return
+    }
+    return bytes_read, nil
+}
+
+
+image_read :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
+    // open file for reading
+    fd := os.open(filename, os.O_RDONLY) or_return
+    defer os.close(fd)
+
+    // create a buffered io.Reader Stream
+    reader_stream : io.Reader = os.stream_from_handle(fd=fd)
+    defer io.close(reader_stream)
+
+    bytes_read := image_read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
 
     // compute required total memory for data buffer
     total_bytes_required := image_required_data_size(img)
 
-
     if img.ElementDataFile == "LOCAL" {
-
-        buffered_reader_read_until_eof :: proc(buffered_reader: bufio.Reader, buffer_dest: []u8) -> (err: Error) {
-            // pretty hacky approach to extract remainder read data in buffer after the newline and copy to data_encoded_buffer
-            n_unprocessed_elements_in_buffer := buffered_reader.w - buffered_reader.r
-            for i in 0..<n_unprocessed_elements_in_buffer {
-                buffer_dest[i] = buffered_reader.buf[i + buffered_reader.r]
-            }
-            // read the rest of the file directly without the buffered reader
-            n := io.read(s=buffered_reader.rd, p=buffer_dest[n_unprocessed_elements_in_buffer:]) or_return
-
-            assert(n + n_unprocessed_elements_in_buffer == len(buffer_dest))
-
-            return nil
-        }
-
         if img.CompressedData {
             // use zlib to decompress
             data_buffer_size := os.file_size(fd) or_return
             data_buffer_size -= i64(bytes_read)
             data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
-
-            buffered_reader_read_until_eof(buffered_reader=buffered_reader, buffer_dest=data_encoded_buffer) or_return
-
-            // TODO possible to have a stream as input for inflate???
-            // compress.Context_Memory_Input
-            buf: bytes.Buffer
-            err := zlib.inflate_from_byte_array(input=data_encoded_buffer, buf=&buf, expected_output_size=total_bytes_required + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
-
-            //defer bytes.buffer_destroy(&buf) // don't destroy, keep data around...
-            img.Data = buf.buf[:total_bytes_required]
+            io.read(s=reader_stream, p=data_encoded_buffer[:]) or_return
+            inflated_data := data_inflate_zlib(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
+            img.Data = inflated_data
         } else {
-            // allocate memory for buffer
+            // allocate memory for buffer and read everything in one go
             data_buffer := make([]byte, total_bytes_required, allocator=allocator) or_return
-
-            // bufio.reader_read must be called in a loop until everything is consumed, this seems suboptimal, since we know the req. size
-            // It appears this is expected behavior, it reads buffer size max, it must be called multiple times until reader generates a consume error...
-
-            buffered_reader_read_until_eof(buffered_reader=buffered_reader, buffer_dest=data_buffer) or_return
-
+            io.read(s=reader_stream, p=data_buffer[:]) or_return
             img.Data = data_buffer[:]
         }
-
     } else {
         // try to open external file to read the data from
         file_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
@@ -314,17 +301,12 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
             // use zlib to decompress
             data_buffer_size := os.file_size(fd_data) or_return
             data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
-            // defer delete(data_encoded_buffer) // this gives a bad free ( I don't understand, maybe because it is put on temp_allocator ?)
-            encoded_input := os.read(fd=fd_data, data=data_encoded_buffer) or_return
-            buf: bytes.Buffer
-            // TODO possible to have a stream as input for inflate???
-            err := zlib.inflate_from_byte_array(input=data_encoded_buffer, buf=&buf, expected_output_size=total_bytes_required + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
-            //defer bytes.buffer_destroy(&buf)
-            img.Data = buf.buf[:total_bytes_required]
+            os.read(fd=fd_data, data=data_encoded_buffer) or_return
+            inflated_data := data_inflate_zlib(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
+            img.Data = inflated_data
         } else {
-            // allocate memory for buffer
+            // allocate memory for buffer and read everything in one go
             data_buffer := make([]byte, total_bytes_required, allocator=allocator) or_return
-            // read everything into buffer in one go directly
             os.read(fd=fd_data, data=data_buffer) or_return
             img.Data = data_buffer[:]
         }
@@ -333,9 +315,26 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
 }
 
 
-data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: [dynamic]u8, err: os.Error) {
+data_inflate_zlib :: proc(data: []u8, expected_output_size: int, allocator:=context.allocator) -> (inflated_data: []u8, err: compress.Error) {
+    // TODO this method is VERY slow for large files
+    // TODO optimize... add option to remove Adler32 check at the end
+    // TODO optimize... implement better zlib inflate ????
+    // TODO possible to have a stream as input for inflate???
+    // compress.Context_Memory_Input / compress.Context_Stream_Input
+    context.allocator = allocator
+    buf: bytes.Buffer
+    zlib_err := zlib.inflate_from_byte_array(input=data, buf=&buf, expected_output_size=expected_output_size + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
+    if zlib_err != nil {
+        return nil, zlib_err
+    }
+    return buf.buf[:expected_output_size], nil
+}
+
+
+data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: [dynamic]u8, err: compress.Error) {
     // TODO perform deflate and retrieve compressed_data_size to store in header
     // TODO there is no zlib deflate??? implement yourself?
+    context.allocator = allocator
     fmt.panicf("Compression using zlib is currently not supported as it is not implemented in Odin")
     //return 0, nil
 }
@@ -468,7 +467,7 @@ main :: proc()
         spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
     }
 
-    input_test_image_file := `.\test\test_001.mhd`
+    input_test_image_file := `.\test\test_001_uncompressed.mhd`
     img, err := image_read(input_test_image_file, allocator=context.allocator)
     image_destroy(img, allocator=context.allocator)
 }
