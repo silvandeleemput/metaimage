@@ -23,6 +23,11 @@ import "core:path/filepath"
 import "core:compress/zlib"
 import "core:bytes"
 
+// These imports are for runtime profiling using spall
+import "core:prof/spall"
+import "base:runtime"
+import "core:/sync"
+
 
 ObjectType :: enum u8 {
     Image
@@ -449,13 +454,39 @@ image_destroy :: proc(img: Image, allocator:=context.allocator) {
 
 main :: proc()
 {
+    when ODIN_DEBUG {
+        // Inject Spall runtime profiling...
+        spall_ctx = spall.context_create("metaio_trace.spall")
+        defer spall.context_destroy(&spall_ctx)
+
+        buffer_backing := make([]u8, spall.BUFFER_DEFAULT_SIZE)
+        defer delete(buffer_backing)
+
+        spall_buffer = spall.buffer_create(buffer_backing, u32(sync.current_thread_id()))
+        defer spall.buffer_destroy(&spall_ctx, &spall_buffer)
+
+        spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
+    }
+
     input_test_image_file := `.\test\test_001.mhd`
     img, err := image_read(input_test_image_file, allocator=context.allocator)
+    image_destroy(img, allocator=context.allocator)
 }
 
-
-
 when ODIN_DEBUG {
+    spall_ctx: spall.Context
+    @(thread_local) spall_buffer: spall.Buffer
+
+    @(instrumentation_enter)
+    spall_enter :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
+        spall._buffer_begin(&spall_ctx, &spall_buffer, "", "", loc)
+    }
+
+    @(instrumentation_exit)
+    spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
+        spall._buffer_end(&spall_ctx, &spall_buffer)
+    }
+
 
     @(test)
     test_image_read_compressed_mhd :: proc(t: ^testing.T) {
