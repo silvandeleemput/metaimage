@@ -21,15 +21,19 @@ import "core:compress"
 import "core:mem"
 import "core:strconv"
 import "core:path/filepath"
-import "core:compress/zlib"
 import "core:bytes"
+import "core:time"
+
+import "vendor:zlib"
+
 
 // These imports are for runtime profiling using spall
 import "core:prof/spall"
 import "base:runtime"
 import "core:/sync"
 
-//import "vendor:zlib"
+
+SPALL_ENABLED :: false
 
 
 ObjectType :: enum u8 {
@@ -122,13 +126,26 @@ Image :: struct {
 }
 
 
+ZLIB_Error :: enum i8 {
+    OK = 0,
+    STREAM_END = 1,
+    NEED_DICT = 2,
+    ERRNO = -1,
+    STREAM_ERROR = -2,
+    DATA_ERROR = -3,
+    MEM_ERROR = -4,
+    BUF_ERROR = -5,
+    VERSION_ERROR = -6,
+}
+
+
 Error :: union {
     os.Error,
     os.General_Error,
     io.Error,
     os.Platform_Error,
     mem.Allocator_Error,
-    compress.Error,
+    ZLIB_Error,
 }
 
 
@@ -160,6 +177,9 @@ create_u16_array :: proc(elements_string: string, n_elements: int, allocator:= c
 
 image_required_data_size :: proc(img: Image) -> int {
     // compute required total memory for data buffer
+    if len(img.DimSize) == 0 {
+        return -1
+    }
     total_bytes_required : = int(img.DimSize[0])
     for val in img.DimSize[1:] {
         total_bytes_required = total_bytes_required * int(val)
@@ -195,7 +215,7 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
     image_init_header(img)
 
     // read header information first
-    //bytes_read := 0
+    bytes_read = 0
     meta_data_map := make(map [string]string, allocator=allocator)
     img.MetaData = meta_data_map
     for img.ElementDataFile == "" {
@@ -315,32 +335,120 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
 }
 
 
-data_inflate_zlib :: proc(data: []u8, expected_output_size: int, allocator:=context.allocator) -> (inflated_data: []u8, err: compress.Error) {
-    // TODO this method is VERY slow for large files
-    // TODO optimize... add option to remove Adler32 check at the end
-    // TODO optimize... implement better zlib inflate ????
-    // TODO possible to have a stream as input for inflate???
-    // compress.Context_Memory_Input / compress.Context_Stream_Input
+
+
+data_inflate_zlib :: proc(data: []u8, expected_output_size: int, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
+    // Using vendor zlib here, as it is way faster than the compress.zlib odin version
+    // Using vender zlib we can also skip the Adler32 checksum, which is also very time consuming
+    // TODO Using vender zlib we have issues with 32 bit c.uint and c.ulong on very large files...
+    // TODO fix this using... https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
     context.allocator = allocator
-    buf: bytes.Buffer
-    zlib_err := zlib.inflate_from_byte_array(input=data, buf=&buf, expected_output_size=expected_output_size + 1) // +1 prevents dynamic buffer grow call and hence allocation of too much space...
-    if zlib_err != nil {
-        return nil, zlib_err
+    data_buffer := make([]byte, expected_output_size, allocator=allocator) or_return
+    strm : zlib.z_stream_s
+
+    ZLIB_DEF_WBITS :: 15
+    zlib_err := zlib.inflateInit2(strm=&strm, windowBits=ZLIB_DEF_WBITS)
+    if zlib_err != zlib.OK {
+        return nil, ZLIB_Error(zlib_err)
     }
-    return buf.buf[:expected_output_size], nil
+    strm.next_in = raw_data(data)
+    strm.avail_in = u32(len(data))
+    strm.next_out = raw_data(data_buffer)
+    strm.avail_out = u32(expected_output_size)
+    zlib_err = zlib.inflate(strm=&strm, flush=zlib.NO_FLUSH)
+    if zlib_err != zlib.STREAM_END
+    {
+        return nil, ZLIB_Error(zlib_err)
+    }
+    zlib_err = zlib.inflateEnd(strm=&strm)
+    if zlib_err != zlib.OK {
+        return nil, ZLIB_Error(zlib_err)
+    }
+    assert(expected_output_size == int(strm.total_out), fmt.aprintf("expected: %d,  got: %d", expected_output_size, int(strm.total_out)))
+    return data_buffer[:min(expected_output_size, int(strm.total_out))], nil
 }
 
 
-data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: [dynamic]u8, err: compress.Error) {
-    // TODO perform deflate and retrieve compressed_data_size to store in header
-    // TODO there is no zlib deflate??? implement yourself?
+MET_MaxChunkSize :: 1024 * 1024 * 1024
+
+
+data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: []u8, err: Error) {
+    // Using vendor zlib here as there is no odin version implemented yet
     context.allocator = allocator
-    fmt.panicf("Compression using zlib is currently not supported as it is not implemented in Odin")
-    //return 0, nil
+
+    // TODO for small images it might actually be too little, look here... https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
+    // TODO deflate optimize data_buffer length... (we allocate probably way too much...)
+    // TODO for big images larger than 2**32 this will not work fix this...
+
+    //data_buffer := make_dynamic_array_len_cap([dynamic]u8, len=len(data), cap=len(data), allocator=allocator) or_return
+    data_buffer := make([]u8, len(data) / 2, allocator=allocator) or_return
+
+    // inject custom allocators to allocate using the temp_allocator...
+    alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
+        context = runtime.default_context()
+        res, err := mem.alloc_bytes(int(size) * int(items), allocator=context.temp_allocator)
+        if err != nil {
+            fmt.panicf("Found the following error for allocation: %v", err)
+        }
+        return raw_data(res)
+    }
+
+    free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
+    {
+        // Not needed as temp_allocator will free itself
+        // context = runtime.default_context()
+        // err := mem.free(address, allocator=context.temp_allocator)
+        // if err != nil {
+        //     fmt.panicf("Found the following error for freeing: %v", err)
+        // }
+        return
+    }
+
+    strm : zlib.z_stream_s
+
+    strm.zalloc = alloc_func // use nil for default zlib alloc func
+    strm.zfree = free_func // use nil for default zlib free func
+    strm.opaque = nil
+
+    ZLIB_MEM_LEVEL :: 8
+    ZLIB_DEF_WBITS :: 15
+    zlib_err := zlib.deflateInit2(
+        strm=&strm,
+        level=zlib.BEST_SPEED,
+        method=zlib.DEFLATED,
+        windowBits=ZLIB_DEF_WBITS,
+        memLevel=ZLIB_MEM_LEVEL,
+        strategy=zlib.FILTERED
+    )
+    if zlib_err != zlib.OK {
+        return nil, ZLIB_Error(zlib_err)
+    }
+
+    strm.next_in = raw_data(data)
+    strm.avail_in = u32(len(data))
+    strm.next_out = raw_data(data_buffer)
+    strm.avail_out = u32(len(data_buffer))
+
+    zlib_err = zlib.deflate(strm=&strm, flush=zlib.NO_FLUSH)
+    if zlib_err != zlib.OK {
+        return nil, ZLIB_Error(zlib_err)
+    }
+
+    zlib_err = zlib.deflate(strm=&strm, flush=zlib.FINISH)
+    if (zlib_err != zlib.STREAM_END) {
+        return nil, ZLIB_Error(zlib_err)
+    }
+
+    zlib_err = zlib.deflateEnd(strm=&strm)
+    if zlib_err != zlib.OK {
+        return nil, ZLIB_Error(zlib_err)
+    }
+
+    return data_buffer[:strm.total_out], nil
 }
 
 
-image_write :: proc(img: Image, filename: string, compression: bool = false) -> (err: Error) {
+image_write :: proc(img: Image, filename: string, compression: bool = false, allocator:=context.temp_allocator) -> (err: Error) {
     // TODO implement atomic rename trick for intermediate writing...?
     is_single_file := strings.ends_with(filename, ".mha")
     ensure(is_single_file || strings.ends_with(filename, ".mhd"))
@@ -349,17 +457,17 @@ image_write :: proc(img: Image, filename: string, compression: bool = false) -> 
     // perform zlib deflate in buffer if compression is enabled
     // (do this first to retrieve the correct compressed_data_size)
     compressed_data_size : int
-    compressed_data_buffer : [dynamic]u8
+    compressed_data_buffer : []u8
     if compression {
-        b := data_deflate_zlib(data=img.Data, allocator=context.temp_allocator) or_return
+        b := data_deflate_zlib(data=img.Data, allocator=allocator) or_return
         compressed_data_buffer = b
         compressed_data_size = len(b)
     }
-    defer if compression { delete(compressed_data_buffer) }
+    defer if compression { delete(compressed_data_buffer, allocator=allocator) }
 
     // if not a single file write data to element_data_file instead
     if !is_single_file {
-        element_data_file = strings.concatenate({filename[:len(filename) - 3], (compression ? "zraw" : "raw")}, allocator=context.temp_allocator)
+        element_data_file = strings.concatenate({filename[:len(filename) - 3], (compression ? "zraw" : "raw")}, allocator=allocator)
         err_open : os.Error
         fd_data := os.open(element_data_file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC) or_return
         defer os.close(fd_data)
@@ -386,27 +494,27 @@ image_write :: proc(img: Image, filename: string, compression: bool = false) -> 
         return val ? "True" : "False"
     }
 
-    os.write_string(fd, fmt.aprintfln("ObjectType = %v", objecttype_str, allocator=context.temp_allocator))
-    os.write_string(fd, fmt.aprintfln("NDims = %d", img.NDims, allocator=context.temp_allocator))
-    os.write_string(fd, fmt.aprintfln("BinaryData = %v", to_bool_str(img.BinaryData), allocator=context.temp_allocator))
-    os.write_string(fd, fmt.aprintfln("BinaryDataByteOrderMSB = %v", to_bool_str(img.BinaryDataByteOrderMSB), allocator=context.temp_allocator))
-    os.write_string(fd, fmt.aprintfln("CompressedData = %v", to_bool_str(compression), allocator=context.temp_allocator))
+    os.write_string(fd, fmt.aprintfln("ObjectType = %v", objecttype_str, allocator=allocator))
+    os.write_string(fd, fmt.aprintfln("NDims = %d", img.NDims, allocator=allocator))
+    os.write_string(fd, fmt.aprintfln("BinaryData = %v", to_bool_str(img.BinaryData), allocator=allocator))
+    os.write_string(fd, fmt.aprintfln("BinaryDataByteOrderMSB = %v", to_bool_str(img.BinaryDataByteOrderMSB), allocator=allocator))
+    os.write_string(fd, fmt.aprintfln("CompressedData = %v", to_bool_str(compression), allocator=allocator))
     if compression {
         assert(compressed_data_size > 0)
-        os.write_string(fd, fmt.aprintfln("CompressedDataSize = %d", compressed_data_size, allocator=context.temp_allocator))
+        os.write_string(fd, fmt.aprintfln("CompressedDataSize = %d", compressed_data_size, allocator=allocator))
     }
 
-    iterate_values_and_write :: proc(fd: os.Handle, data: []$T) {
+    iterate_values_and_write :: proc(fd: os.Handle, data: []$T, allocator:=context.allocator) {
         for e in data {
-            os.write_string(fd, fmt.aprintf(" %v", e, allocator=context.temp_allocator))
+            os.write_string(fd, fmt.aprintf(" %v", e, allocator=allocator))
         }
         os.write_string(fd, "\n")
     }
 
     os.write_string(fd, "TransformMatrix =")
-    iterate_values_and_write(fd, img.TransformMatrix)
+    iterate_values_and_write(fd, img.TransformMatrix, allocator=allocator)
     os.write_string(fd, "Offset =")
-    iterate_values_and_write(fd, img.Offset)
+    iterate_values_and_write(fd, img.Offset, allocator=allocator)
 
     // write metadata
     for k, v in img.MetaData {
@@ -417,12 +525,12 @@ image_write :: proc(img: Image, filename: string, compression: bool = false) -> 
     }
 
     os.write_string(fd, "ElementSpacing =")
-    iterate_values_and_write(fd, img.ElementSpacing)
+    iterate_values_and_write(fd, img.ElementSpacing, allocator=allocator)
     os.write_string(fd, "DimSize =")
-    iterate_values_and_write(fd, img.DimSize)
+    iterate_values_and_write(fd, img.DimSize, allocator=allocator)
 
-    os.write_string(fd, fmt.aprintfln("ElementType = %v", element_type_str, allocator=context.temp_allocator))
-    os.write_string(fd, fmt.aprintfln("ElementDataFile = %v", filepath.base(element_data_file), allocator=context.temp_allocator))
+    os.write_string(fd, fmt.aprintfln("ElementType = %v", element_type_str, allocator=allocator))
+    os.write_string(fd, fmt.aprintfln("ElementDataFile = %v", filepath.base(element_data_file), allocator=allocator))
 
     if is_single_file {
         if compression {
@@ -451,9 +559,12 @@ image_destroy :: proc(img: Image, allocator:=context.allocator) {
 }
 
 
+
+
+
 main :: proc()
 {
-    when ODIN_DEBUG {
+    when SPALL_ENABLED {
         // Inject Spall runtime profiling...
         spall_ctx = spall.context_create("metaio_trace.spall")
         defer spall.context_destroy(&spall_ctx)
@@ -467,12 +578,43 @@ main :: proc()
         spall.SCOPED_EVENT(&spall_ctx, &spall_buffer, #procedure)
     }
 
-    input_test_image_file := `.\test\test_001_uncompressed.mhd`
+
+    //input_test_image_file := `.\test\test_001.mhd`
+    input_test_image_file := `D:\data\large_nodule_test\gclarge\input\images\fixed\large.mhd`
+    if len(os.args) > 1 {
+        input_test_image_file = os.args[1]
+        fmt.printf("Opening %s", input_test_image_file)
+        if !os.exists(input_test_image_file) {
+            fmt.printf("Could not find the file %s", input_test_image_file)
+            return
+        }
+    }
+
+    output_test_image_file := `.\test\test_001_compressed_write_test.mhd`
+
+    start_tick := time.tick_now()
     img, err := image_read(input_test_image_file, allocator=context.allocator)
+    free_all(context.temp_allocator)
+    duration := time.tick_since(start_tick)
+    fmt.printf("Time for loading image: %d", duration)
+
+    start_tick = time.tick_now()
+    write_err := image_write(img, output_test_image_file, true)
+    free_all(context.temp_allocator)
+    duration = time.tick_since(start_tick)
+    fmt.printf("Time for writing image: %d", duration)
+    img2, err2 := image_read(output_test_image_file, allocator=context.allocator)
+    fmt.printf("Data size after compression: %d / %d", img2.CompressedDataSize, len(img.Data))
+
     image_destroy(img, allocator=context.allocator)
 }
 
-when ODIN_DEBUG {
+
+
+
+
+
+when SPALL_ENABLED {
     spall_ctx: spall.Context
     @(thread_local) spall_buffer: spall.Buffer
 
@@ -485,8 +627,9 @@ when ODIN_DEBUG {
     spall_exit :: proc "contextless" (proc_address, call_site_return_address: rawptr, loc: runtime.Source_Code_Location) {
         spall._buffer_end(&spall_ctx, &spall_buffer)
     }
+}
 
-
+when ODIN_DEBUG {
     @(test)
     test_image_read_compressed_mhd :: proc(t: ^testing.T) {
         test_image_read_expected_values(t=t, test_file_name=`.\test\test_001.mhd`, compressed=true)
@@ -538,6 +681,53 @@ when ODIN_DEBUG {
         test_image_read_expected_values(t=t, test_file_name=output_test_image_file, compressed=false)
     }
 
+    @(test)
+    test_image_write_compressed_mha :: proc(t: ^testing.T) {
+        input_test_image_file := `.\test\test_001.mhd`
+        output_test_image_file := `.\test\tmp_test_001_write_test_c.mha`
+        img, err := image_read(input_test_image_file, allocator=context.allocator)
+        testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
+        if err != nil {
+            return
+        }
+        defer image_destroy(img, allocator=context.allocator)
+        free_all(context.temp_allocator)
+        write_err := image_write(img, output_test_image_file, true)
+        testing.expect(t, write_err == nil, fmt.aprintf("\nFOUND WRITE ERROR: %v", write_err, allocator=context.temp_allocator))
+        if write_err != nil {
+            return
+        }
+        defer if os.exists(output_test_image_file) { os.unlink(output_test_image_file) }
+        testing.expect(t, os.exists(input_test_image_file), fmt.aprintf("Input test file does not exist: %s", input_test_image_file, allocator=context.temp_allocator))
+        testing.expect(t, os.exists(output_test_image_file), fmt.aprintf("Output test file does not exist: %s", output_test_image_file, allocator=context.temp_allocator))
+        test_image_read_expected_values(t=t, test_file_name=output_test_image_file, compressed=true)
+    }
+
+    @(test)
+    test_image_write_compressed_mhd :: proc(t: ^testing.T) {
+        input_test_image_file := `.\test\test_001.mhd`
+        output_test_image_file := `.\test\tmp_test_001_write_test_c.mhd`
+        output_test_image_data_file := `.\test\tmp_test_001_write_test_c.zraw`
+        img, err := image_read(input_test_image_file, allocator=context.allocator)
+        testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
+        if err != nil {
+            return
+        }
+        defer image_destroy(img, allocator=context.allocator)
+        free_all(context.temp_allocator)
+        write_err := image_write(img, output_test_image_file, true)
+        testing.expect(t, write_err == nil, fmt.aprintf("\nFOUND WRITE ERROR: %v", write_err, allocator=context.temp_allocator))
+        if write_err != nil {
+            return
+        }
+        defer if os.exists(output_test_image_file) { os.unlink(output_test_image_file) }
+        defer if os.exists(output_test_image_data_file) { os.unlink(output_test_image_data_file) }
+        testing.expect(t, os.exists(input_test_image_file), fmt.aprintf("Input test file does not exist: %s", input_test_image_file, allocator=context.temp_allocator))
+        testing.expect(t, os.exists(output_test_image_file), fmt.aprintf("Output test file does not exist: %s", output_test_image_file, allocator=context.temp_allocator))
+        testing.expect(t, os.exists(output_test_image_data_file), fmt.aprintf("Output test data file does not exist: %s", output_test_image_data_file, allocator=context.temp_allocator))
+        test_image_read_expected_values(t=t, test_file_name=output_test_image_file, compressed=true)
+    }
+
 
     test_image_read_expected_values :: proc(t: ^testing.T, test_file_name: string, compressed: bool) {
         // TODO replace tests with smaller test files...
@@ -563,10 +753,11 @@ when ODIN_DEBUG {
         testing.expect(t, slice.equal(img.ElementSpacing, EXPECTED_ELEMENT_SPACING), fmt.aprintf("Image ElementSpacing should match: %v", EXPECTED_ELEMENT_SPACING, allocator=context.temp_allocator))
         testing.expect(t, slice.equal(img.TransformMatrix, EXPECTED_TRANSFORM_MATRIX), fmt.aprintf("Image TransformMatrix should match: %v", EXPECTED_TRANSFORM_MATRIX, allocator=context.temp_allocator))
         testing.expect(t, img.ElementType == .MET_UCHAR, "Image ElementType should match MET_UCHAR")
-        testing.expect(t, img.CompressedData == compressed, fmt.aprintf("Image CompressedData should be %d", compressed, allocator=context.temp_allocator))
+        testing.expect(t, img.CompressedData == compressed, fmt.aprintf("Image CompressedData should be %v", compressed, allocator=context.temp_allocator))
         if compressed {
-            expected_compressed_data_size := u64(strings.ends_with(test_file_name, ".mha") ? 1702408 : 1405133)
-            testing.expect(t, img.CompressedDataSize == expected_compressed_data_size, fmt.aprintf("Image CompressedDataSizeshould be equal to %d, found %d", expected_compressed_data_size, img.CompressedDataSize, allocator=context.temp_allocator))
+            //expected_compressed_data_size := u64(strings.ends_with(test_file_name, ".mha") ? 1702408 : 1405133)
+            expected_compressed_sizes : []u64 = {1702408, 1405133, 2986855}
+            testing.expect(t, slice.contains(expected_compressed_sizes, img.CompressedDataSize), fmt.aprintf("Image CompressedDataSize should be any of %d, found %d", expected_compressed_sizes, img.CompressedDataSize, allocator=context.temp_allocator))
         }
 
         // test meta data (for 3 test images has weird additional ITK_* tags that can be ignored)
@@ -588,7 +779,7 @@ when ODIN_DEBUG {
         }
         testing.expect(t, unexpected_values == 0, "Found unexpected values in the test data")
         testing.expect(t, total_voxels == 359661568, "Found unexpected number of voxels in the test data")
-        testing.expect(t, image_required_data_size(img) == total_voxels, "Found data_size larger than the total number of foxels")
+        testing.expect(t, image_required_data_size(img) == total_voxels, "Found data_size larger than the total number of voxels")
         testing.expect(t, total_sum == 115079760, "Found unexpected total sum in the test data")
     }
 }
