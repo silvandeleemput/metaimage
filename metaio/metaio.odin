@@ -1,7 +1,25 @@
 /* Odin package for reading and writing ITK MetaIO Image files
+* A subset of features are available, mainly focused on the Image Object Type
 *
-* image_read
-* image_write
+* Specifically the following limitations apply:
+*   * ElementDataFile tag only supports LOCAL and the filename for a single data file
+*     in the same directory typical conventions: .raw/.zraw
+*   * ObjectType only supports Image
+*   * No support for the following MetaObject tags (they will be added to the MetaData dict (string:string) though):
+*     * Comment
+*     * ObjectSubType
+*     * TransformType
+*     * Name
+*     * ID
+*     * ParentID
+*     * ElementByteOrderMSB
+*     * Color
+*     * AnatomicalOrientation
+*     * HeaderSize
+*     * Modality
+*     * SequenceID
+*     * ElementMin
+*     * ElementMax
 *
 * Author: Sil van de Leemput
 * email: sil.vandeleemput@radboudumc.nl
@@ -11,7 +29,6 @@ package metaio
 
 import "base:runtime"
 import "core:os"
-import "core:os/os2"
 import "core:fmt"
 import "core:strings"
 import "core:testing"
@@ -418,19 +435,19 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
     chunk_size := u32(min(len(data), max_chunk_size))
     input_buffer := raw_data(data)
     output_buffer := make([]u8, chunk_size, allocator=allocator) or_return
-
     compressed_data := make([]u8, buffer_out_size, allocator=allocator) or_return
-    compressed_data_size : u64 = 0
 
+    // This code can be used to tweak strategy / level / memLevel
+    // deflateInit uses strategy=zlib.DEFAULT_STRATEGY=0, with memLevel=8, level=zlib.BEST_SPEED=1
     // ZLIB_MEM_LEVEL :: 8
-    // ZLIB_DEF_WBITS :: 15 //+ 32
+    // ZLIB_DEF_WBITS :: 15 // only deflate zlib
     // zlib_err := zlib.deflateInit2(
     //     strm=&strm,
     //     level=zlib.BEST_SPEED,
     //     method=zlib.DEFLATED,
     //     windowBits=ZLIB_DEF_WBITS,
     //     memLevel=ZLIB_MEM_LEVEL,
-    //     strategy=zlib.FILTERED
+    //     strategy=zlib.RLE
     // )
     zlib_err := zlib.deflateInit(
         strm=&strm,
@@ -441,16 +458,16 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
     }
 
     cur_in_start : u64 = 0
-    cur_out_start : u64 = 0
+    cur_out_start : u64 = 0  // decompressed data size
     flush : i32 = 0
 
     for flush != zlib.FINISH {
         strm.avail_in = u32(min(source_size - cur_in_start, u64(chunk_size)))
         strm.next_in = &input_buffer[cur_in_start]
-        last_chunk := cur_in_start + u64(strm.avail_in) >= u64(len(data))
+        last_chunk := (cur_in_start + u64(strm.avail_in)) >= source_size
         flush = last_chunk ? zlib.FINISH : zlib.NO_FLUSH
         cur_in_start += u64(strm.avail_in)
-        for strm.avail_out == 0 {
+        for {
             strm.avail_out = chunk_size
             strm.next_out = raw_data(output_buffer)
             zlib_err = zlib.deflate(strm=&strm, flush=flush)
@@ -472,10 +489,9 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
             }
             mem.copy(&compressed_data[cur_out_start], raw_data(output_buffer), int(count_out))
             cur_out_start += count_out
+            if strm.avail_out != 0 do break
         }
     }
-
-    compressed_data_size = cur_out_start
 
     mem_err := delete(output_buffer, allocator=allocator)
     if mem_err != nil && mem_err != .Mode_Not_Implemented {
@@ -487,7 +503,7 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
         return nil, ZLIB_Error(zlib_err)
     }
 
-    return compressed_data[:compressed_data_size], nil
+    return compressed_data[:cur_out_start], nil
 }
 
 
