@@ -107,6 +107,9 @@ MET_ValueTypeSize :: [ElementType]u8 {
 }
 
 
+MET_MaxChunkSize :: 1024 * 1024 * 1024  // 2 ^ 30 Used for zlib compression/decompression, must be less than 2 ^ 32!
+
+
 Image :: struct {
     ObjectType: ObjectType,
     NDims: u8,
@@ -175,17 +178,15 @@ create_u16_array :: proc(elements_string: string, n_elements: int, allocator:= c
 }
 
 
-image_required_data_size :: proc(img: Image) -> int {
+image_required_data_size :: proc(img: Image) -> uint {
     // compute required total memory for data buffer
-    if len(img.DimSize) == 0 {
-        return -1
-    }
-    total_bytes_required : = int(img.DimSize[0])
+    assert(len(img.DimSize) > 0, "image_required_data_size, requires img.DimSize to be of non-zero length")
+    total_bytes_required : = uint(img.DimSize[0])
     for val in img.DimSize[1:] {
-        total_bytes_required = total_bytes_required * int(val)
+        total_bytes_required = total_bytes_required * uint(val)
     }
     value_type_size := MET_ValueTypeSize
-    total_bytes_required = total_bytes_required * int(value_type_size[img.ElementType]) * int(img.ElementNumberOfChannels)
+    total_bytes_required = total_bytes_required * uint(value_type_size[img.ElementType]) * uint(img.ElementNumberOfChannels)
     return total_bytes_required
 }
 
@@ -282,13 +283,10 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
 
 
 image_read :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
-    // open file for reading
+    // open file for reading as an io.Reader Stream
     fd := os.open(filename, os.O_RDONLY) or_return
-    defer os.close(fd)
-
-    // create a buffered io.Reader Stream
     reader_stream : io.Reader = os.stream_from_handle(fd=fd)
-    defer io.close(reader_stream)
+    defer io.close(reader_stream) // this also closes the file handle
 
     bytes_read := image_read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
 
@@ -334,117 +332,170 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
     return img, nil
 }
 
+// these functions will allocate and free memory based on the temp_allocator of the default_context
+zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
+    context = runtime.default_context()
+    res, err := mem.alloc_bytes(int(size) * int(items), allocator=context.temp_allocator)
+    if err != nil {
+        fmt.panicf("Found the following error for allocation: %v", err)
+    }
+    return raw_data(res)
+}
 
+zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
+{
+    context = runtime.default_context()
+    err := mem.free(address, allocator=context.temp_allocator)
+    if err != nil && err != .Mode_Not_Implemented {  // if not implemented allow running it anyway for e.g. arena allocators
+        fmt.panicf("Found the following error for freeing: %v", err)
+    }
+    return
+}
 
-
-data_inflate_zlib :: proc(data: []u8, expected_output_size: int, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
+data_inflate_zlib :: proc(data: []u8, expected_output_size: uint, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
     // Using vendor zlib here, as it is way faster than the compress.zlib odin version
-    // Using vender zlib we can also skip the Adler32 checksum, which is also very time consuming
-    // TODO Using vender zlib we have issues with 32 bit c.uint and c.ulong on very large files...
-    // TODO fix this using... https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
-    context.allocator = allocator
-    data_buffer := make([]byte, expected_output_size, allocator=allocator) or_return
-    strm : zlib.z_stream_s
+    // Using vender zlib we can also skip the Adler32 checksum, which is very time consuming for large files
+    // We implement chunk size buffering like in ITK to prevent zlib issues with 32 bit c.uint and c.ulong on very large files...
+    // See for reference implementation: https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
+    uncompressed_data := make([]byte, expected_output_size, allocator=allocator) or_return
 
-    ZLIB_DEF_WBITS :: 15
-    zlib_err := zlib.inflateInit2(strm=&strm, windowBits=ZLIB_DEF_WBITS)
+    strm : zlib.z_stream_s
+    strm.zalloc = zlib_alloc_func // use nil for default zlib alloc func
+    strm.zfree = zlib_free_func // use nil for default zlib free func
+    strm.opaque = nil
+    strm.avail_out = 0 // set this explicitly
+
+    zlib_err := zlib.inflateInit2(strm=&strm, windowBits=15 + 32) // 47 - allow both gzip and zlib compression headers
     if zlib_err != zlib.OK {
         return nil, ZLIB_Error(zlib_err)
     }
-    strm.next_in = raw_data(data)
-    strm.avail_in = u32(len(data))
-    strm.next_out = raw_data(data_buffer)
-    strm.avail_out = u32(expected_output_size)
-    zlib_err = zlib.inflate(strm=&strm, flush=zlib.NO_FLUSH)
-    if zlib_err != zlib.STREAM_END
-    {
-        return nil, ZLIB_Error(zlib_err)
+
+    source_pos : u64 = 0
+    dest_pos : u64 = 0
+    zlib_err = 0
+
+    for zlib_err != zlib.STREAM_END && zlib_err >= 0 {
+        strm.next_in = &data[source_pos]
+        strm.avail_in = u32(min(u64(len(data)) - source_pos, MET_MaxChunkSize))
+        source_pos += u64(strm.avail_in)
+        for strm.avail_out == 0 {
+            cur_remain_chunk := min(u64(len(uncompressed_data)) - dest_pos, MET_MaxChunkSize)
+            strm.next_out = &uncompressed_data[dest_pos]
+            strm.avail_out = u32(cur_remain_chunk)
+            zlib_err = zlib.inflate(strm=&strm, flush=zlib.NO_FLUSH)
+            if zlib_err == zlib.STREAM_END || zlib_err < 0
+            {
+                if zlib_err != zlib.STREAM_END && zlib_err != zlib.BUF_ERROR {
+                    // Z_BUF_ERROR means there is still data to uncompress,
+                    // but no space left in buffer; non-fatal
+                    fmt.printf("Decompress failed with %d", ZLIB_Error(zlib_err))
+                }
+                // added additional count check here on stream end to be able to verify inflated data size matches the expected_output_size
+                if zlib_err == zlib.STREAM_END {
+                    count_uncompressed := cur_remain_chunk - u64(strm.avail_out)
+                    dest_pos += count_uncompressed
+                }
+                break
+            }
+            count_uncompressed := cur_remain_chunk - u64(strm.avail_out)
+            dest_pos += count_uncompressed
+        }
     }
     zlib_err = zlib.inflateEnd(strm=&strm)
     if zlib_err != zlib.OK {
         return nil, ZLIB_Error(zlib_err)
     }
-    assert(expected_output_size == int(strm.total_out), fmt.aprintf("expected: %d,  got: %d", expected_output_size, int(strm.total_out)))
-    return data_buffer[:min(expected_output_size, int(strm.total_out))], nil
+    assert(expected_output_size == uint(dest_pos), fmt.aprintf("expected: %d,  got: %d", expected_output_size, dest_pos, allocator=context.temp_allocator))
+    return uncompressed_data[:expected_output_size], nil
 }
 
-
-MET_MaxChunkSize :: 1024 * 1024 * 1024
-
-
-data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: []u8, err: Error) {
-    // Using vendor zlib here as there is no odin version implemented yet
-    context.allocator = allocator
-
-    // TODO for small images it might actually be too little, look here... https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
-    // TODO deflate optimize data_buffer length... (we allocate probably way too much...)
-    // TODO for big images larger than 2**32 this will not work fix this...
-
-    //data_buffer := make_dynamic_array_len_cap([dynamic]u8, len=len(data), cap=len(data), allocator=allocator) or_return
-    data_buffer := make([]u8, len(data) / 2, allocator=allocator) or_return
-
-    // inject custom allocators to allocate using the temp_allocator...
-    alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
-        context = runtime.default_context()
-        res, err := mem.alloc_bytes(int(size) * int(items), allocator=context.temp_allocator)
-        if err != nil {
-            fmt.panicf("Found the following error for allocation: %v", err)
-        }
-        return raw_data(res)
-    }
-
-    free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
-    {
-        // Not needed as temp_allocator will free itself
-        // context = runtime.default_context()
-        // err := mem.free(address, allocator=context.temp_allocator)
-        // if err != nil {
-        //     fmt.panicf("Found the following error for freeing: %v", err)
-        // }
-        return
-    }
+data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: []u8, compressed_data_size: u64, err: Error) {
+    // Using vendor zlib here as there is no odin version implemented yet for deflate
+    // This implementation allocates more output memory if required (for small images)...
+    // We implement chunk size buffering like in ITK to prevent zlib issues with 32 bit c.uint and c.ulong on very large files...
+    // See for reference implementation: https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
 
     strm : zlib.z_stream_s
-
-    strm.zalloc = alloc_func // use nil for default zlib alloc func
-    strm.zfree = free_func // use nil for default zlib free func
+    strm.zalloc = zlib_alloc_func // use nil for default zlib alloc func
+    strm.zfree = zlib_free_func // use nil for default zlib free func
     strm.opaque = nil
 
-    ZLIB_MEM_LEVEL :: 8
-    ZLIB_DEF_WBITS :: 15
-    zlib_err := zlib.deflateInit2(
+    source_size := u64(len(data))
+    buffer_out_size := source_size
+    max_chunk_size := MET_MaxChunkSize
+    chunk_size := u32(min(len(data), max_chunk_size))
+    input_buffer := raw_data(data)
+    output_buffer := make([]u8, chunk_size, allocator=allocator) or_return
+
+    compressed_data := make([]u8, buffer_out_size, allocator=allocator) or_return
+
+
+    // ZLIB_MEM_LEVEL :: 8
+    // ZLIB_DEF_WBITS :: 15 //+ 32
+    // zlib_err := zlib.deflateInit2(
+    //     strm=&strm,
+    //     level=zlib.BEST_SPEED,
+    //     method=zlib.DEFLATED,
+    //     windowBits=ZLIB_DEF_WBITS,
+    //     memLevel=ZLIB_MEM_LEVEL,
+    //     strategy=zlib.FILTERED
+    // )
+    zlib_err := zlib.deflateInit(
         strm=&strm,
-        level=zlib.BEST_SPEED,
-        method=zlib.DEFLATED,
-        windowBits=ZLIB_DEF_WBITS,
-        memLevel=ZLIB_MEM_LEVEL,
-        strategy=zlib.FILTERED
+        level=zlib.BEST_SPEED
     )
     if zlib_err != zlib.OK {
-        return nil, ZLIB_Error(zlib_err)
+        return nil, 0, ZLIB_Error(zlib_err)
     }
 
-    strm.next_in = raw_data(data)
-    strm.avail_in = u32(len(data))
-    strm.next_out = raw_data(data_buffer)
-    strm.avail_out = u32(len(data_buffer))
+    cur_in_start : u64 = 0
+    cur_out_start : u64 = 0
+    flush : i32 = 0
 
-    zlib_err = zlib.deflate(strm=&strm, flush=zlib.NO_FLUSH)
-    if zlib_err != zlib.OK {
-        return nil, ZLIB_Error(zlib_err)
+    for flush != zlib.FINISH {
+        strm.avail_in = u32(min(source_size - cur_in_start, u64(chunk_size)))
+        strm.next_in = &input_buffer[cur_in_start]
+        last_chunk := cur_in_start + u64(strm.avail_in) >= u64(len(data))
+        flush = last_chunk ? zlib.FINISH : zlib.NO_FLUSH
+        cur_in_start += u64(strm.avail_in)
+        for strm.avail_out == 0 {
+            strm.avail_out = chunk_size
+            strm.next_out = raw_data(output_buffer)
+            zlib_err = zlib.deflate(strm=&strm, flush=flush)
+            if (zlib_err == zlib.STREAM_ERROR) {
+                return nil, 0, ZLIB_Error(zlib_err)
+            }
+            count_out := u64(chunk_size) - u64(strm.avail_out)
+            if (cur_out_start + count_out) >= buffer_out_size {
+                // if we don't have enough allocation for the output buffer
+                // when the output is bigger than the input (true for small images)
+                compressed_data_temp := make([]u8, cur_out_start + count_out + 1, allocator=allocator) or_return
+                mem.copy(raw_data(compressed_data_temp), raw_data(compressed_data), int(buffer_out_size))
+                mem_err := delete(compressed_data, allocator=allocator)
+                if mem_err != nil && mem_err != .Mode_Not_Implemented {
+                    return nil, 0, mem_err
+                }
+                compressed_data = compressed_data_temp;
+                buffer_out_size = cur_out_start + count_out + 1;
+            }
+            mem.copy(&compressed_data[cur_out_start], raw_data(output_buffer), int(count_out))
+            cur_out_start += count_out
+        }
     }
 
-    zlib_err = zlib.deflate(strm=&strm, flush=zlib.FINISH)
-    if (zlib_err != zlib.STREAM_END) {
-        return nil, ZLIB_Error(zlib_err)
+    compressed_data_size = cur_out_start
+
+    mem_err := delete(output_buffer, allocator=allocator)
+    if mem_err != nil && mem_err != .Mode_Not_Implemented {
+        return nil, 0, mem_err
     }
 
     zlib_err = zlib.deflateEnd(strm=&strm)
     if zlib_err != zlib.OK {
-        return nil, ZLIB_Error(zlib_err)
+        return nil, 0, ZLIB_Error(zlib_err)
     }
 
-    return data_buffer[:strm.total_out], nil
+    return compressed_data[:compressed_data_size], compressed_data_size, nil
 }
 
 
@@ -456,12 +507,10 @@ image_write :: proc(img: Image, filename: string, compression: bool = false, all
 
     // perform zlib deflate in buffer if compression is enabled
     // (do this first to retrieve the correct compressed_data_size)
-    compressed_data_size : int
+    compressed_data_size : u64
     compressed_data_buffer : []u8
     if compression {
-        b := data_deflate_zlib(data=img.Data, allocator=allocator) or_return
-        compressed_data_buffer = b
-        compressed_data_size = len(b)
+        compressed_data_buffer, compressed_data_size = data_deflate_zlib(data=img.Data, allocator=allocator) or_return
     }
     defer if compression { delete(compressed_data_buffer, allocator=allocator) }
 
@@ -560,8 +609,6 @@ image_destroy :: proc(img: Image, allocator:=context.allocator) {
 
 
 
-
-
 main :: proc()
 {
     when SPALL_ENABLED {
@@ -579,8 +626,8 @@ main :: proc()
     }
 
 
-    //input_test_image_file := `.\test\test_001.mhd`
-    input_test_image_file := `D:\data\large_nodule_test\gclarge\input\images\fixed\large.mhd`
+    input_test_image_file := `.\test\test_001.mhd`
+    //input_test_image_file := `D:\data\large_nodule_test\gclarge\input\images\fixed\large.mhd`
     if len(os.args) > 1 {
         input_test_image_file = os.args[1]
         fmt.printf("Opening %s", input_test_image_file)
@@ -769,17 +816,17 @@ when ODIN_DEBUG {
         expected_element_data_file = strings.ends_with(test_file_name, ".mha") ? "LOCAL" : expected_element_data_file
         testing.expect(t, img.ElementDataFile == expected_element_data_file, fmt.aprintf("Image ElementDataFile should be equal to `%s`", expected_element_data_file, allocator=context.temp_allocator))
 
-        unexpected_values, total_voxels, total_sum := 0, 0, 0
+        unexpected_values, total_voxels, total_sum : uint = 0, 0, 0
         for data_element in img.Data {
             if data_element != 0 && data_element != 3 {
                 unexpected_values += 1
             }
-            total_sum += int(data_element)
+            total_sum += uint(data_element)
             total_voxels += 1
         }
         testing.expect(t, unexpected_values == 0, "Found unexpected values in the test data")
         testing.expect(t, total_voxels == 359661568, "Found unexpected number of voxels in the test data")
-        testing.expect(t, image_required_data_size(img) == total_voxels, "Found data_size larger than the total number of voxels")
+        testing.expect(t, image_required_data_size(img) == total_voxels, fmt.aprintf("Found data_size (%d) != than the total number of voxels (%d)", image_required_data_size(img), total_voxels, allocator=context.temp_allocator))
         testing.expect(t, total_sum == 115079760, "Found unexpected total sum in the test data")
     }
 }
