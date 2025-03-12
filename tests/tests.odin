@@ -10,11 +10,12 @@ import "core:path/filepath"
 import "../metaio"
 
 
-TEST_COMPRESSED_MHD_FILE :: `.\res\test_001.mhd`
-TEST_COMPRESSED_MHA_FILE :: `.\res\test_001.mha`
-TEST_UNCOMPRESSED_MHD_FILE :: `.\res\test_001_uncompressed.mhd`
-TEST_UNCOMPRESSED_MHA_FILE :: `.\res\test_001_uncompressed.mha`
+TEST_RES_DIR :: `.\res`
 
+TEST_COMPRESSED_MHD_FILE :: TEST_RES_DIR + `\test_001.mhd`
+TEST_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_001.mha`
+TEST_UNCOMPRESSED_MHD_FILE :: TEST_RES_DIR + `\test_001_uncompressed.mhd`
+TEST_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_001_uncompressed.mha`
 
 @(test)
 test_image_read_compressed_mhd :: proc(t: ^testing.T) {
@@ -39,7 +40,7 @@ test_image_read_uncompressed_mha :: proc(t: ^testing.T) {
 @(test)
 test_image_write_uncompressed_mha :: proc(t: ^testing.T) {
     input_test_image_file := TEST_COMPRESSED_MHD_FILE
-    output_test_image_file := `.\res\tmp_test_001_write_test.mha`
+    output_test_image_file := TEST_COMPRESSED_MHD_FILE + `write_output.mha`
     img, err := metaio.image_read(input_test_image_file, allocator=context.allocator)
     defer metaio.image_destroy(img, allocator=context.allocator)
     free_all(context.temp_allocator)
@@ -53,8 +54,8 @@ test_image_write_uncompressed_mha :: proc(t: ^testing.T) {
 @(test)
 test_image_write_uncompressed_mhd :: proc(t: ^testing.T) {
     input_test_image_file := TEST_COMPRESSED_MHD_FILE
-    output_test_image_file := `.\res\tmp_test_001_write_test.mhd`
-    output_test_image_data_file := `.\res\tmp_test_001_write_test.raw`
+    output_test_image_file := TEST_COMPRESSED_MHD_FILE + `write_output.mhd`
+    output_test_image_data_file := TEST_COMPRESSED_MHD_FILE + `write_output.raw`
     img, err := metaio.image_read(input_test_image_file, allocator=context.allocator)
     defer metaio.image_destroy(img, allocator=context.allocator)
     free_all(context.temp_allocator)
@@ -70,7 +71,7 @@ test_image_write_uncompressed_mhd :: proc(t: ^testing.T) {
 @(test)
 test_image_write_compressed_mha :: proc(t: ^testing.T) {
     input_test_image_file := TEST_COMPRESSED_MHD_FILE
-    output_test_image_file := `.\res\tmp_test_001_write_test_c.mha`
+    output_test_image_file := TEST_COMPRESSED_MHD_FILE + `write_output_compressed.mha`
     img, err := metaio.image_read(input_test_image_file, allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
     if err != nil {
@@ -92,8 +93,8 @@ test_image_write_compressed_mha :: proc(t: ^testing.T) {
 @(test)
 test_image_write_compressed_mhd :: proc(t: ^testing.T) {
     input_test_image_file := TEST_COMPRESSED_MHD_FILE
-    output_test_image_file := `.\res\tmp_test_001_write_test_c.mhd`
-    output_test_image_data_file := `.\res\tmp_test_001_write_test_c.zraw`
+    output_test_image_file := TEST_COMPRESSED_MHD_FILE + `write_output_compressed.mhd`
+    output_test_image_data_file := TEST_COMPRESSED_MHD_FILE + `write_output_compressed.zraw`
     img, err := metaio.image_read(input_test_image_file, allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
     if err != nil {
