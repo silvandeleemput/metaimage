@@ -211,7 +211,7 @@ image_init_header :: proc(img: ^Image) {
 }
 
 
-image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (bytes_read: int, error: Error) {
+image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (error: Error) {
     file_buffer : [256] byte
 
     buffered_reader := bufio.Reader{}
@@ -225,12 +225,10 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
     image_init_header(img)
 
     // read header information first
-    bytes_read = 0
     meta_data_map := make(map [string]string, allocator=allocator)
     img.MetaData = meta_data_map
     for img.ElementDataFile == "" {
         next_line := bufio.reader_read_string(&buffered_reader, '\n', allocator=context.temp_allocator) or_return
-        bytes_read += len(next_line)
         splits := strings.split_n(s=next_line, n=2, sep=" = ", allocator=context.temp_allocator) or_return
         key := splits[0]
         value := splits[1][:len(splits[1]) - 1]  // remove \n character at the end
@@ -287,26 +285,32 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
     if img.ElementDataFile == "LOCAL" {
         io.seek(s=buffered_reader.rd, offset=i64(buffered_reader.r - buffered_reader.w), whence=.Current) or_return
     }
-    return bytes_read, nil
+    return nil
 }
 
 
-image_read :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
+image_read :: proc{image_read_from_file, image_read_from_stream}
+
+
+image_read_from_file :: proc(img: ^Image, filename: string, allocator := context.allocator) -> (error: Error) {
     // open file for reading as an io.Reader Stream
     fd := os.open(filename, os.O_RDONLY) or_return
+    data_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
     reader_stream : io.Reader = os.stream_from_handle(fd=fd)
     defer io.close(reader_stream) // this also closes the file handle
+    return image_read_from_stream(img=img, reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
+}
 
-    bytes_read := image_read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
+image_read_from_stream :: proc(img: ^Image, reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (error: Error) {
+    image_read_header(img=img, reader_stream=reader_stream, allocator=allocator) or_return
 
     // compute required total memory for data buffer
-    total_bytes_required := image_required_data_size(img)
+    total_bytes_required := image_required_data_size(img^)
 
     if img.ElementDataFile == "LOCAL" {
         if img.CompressedData {
             // use zlib to decompress
-            data_buffer_size := os.file_size(fd) or_return
-            data_buffer_size -= i64(bytes_read)
+            data_buffer_size := io.size(reader_stream) or_return // how much bytes left ?
             data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
             io.read(s=reader_stream, p=data_encoded_buffer[:]) or_return
             inflated_data := data_inflate_zlib(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
@@ -319,8 +323,7 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
         }
     } else {
         // try to open external file to read the data from
-        file_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
-        data_filename := fmt.aprintf("%s/%s", file_dir, img.ElementDataFile, allocator=context.temp_allocator)
+        data_filename := fmt.aprintf("%s/%s", data_dir, img.ElementDataFile, allocator=context.temp_allocator)
         fd_data := os.open(data_filename, os.O_RDONLY) or_return
         defer os.close(fd_data)
 
@@ -338,7 +341,7 @@ image_read :: proc(filename: string, allocator := context.allocator) -> (img: Im
             img.Data = data_buffer[:]
         }
     }
-    return img, nil
+    return nil
 }
 
 // these functions will allocate and free memory based on the temp_allocator of the default_context
@@ -451,7 +454,7 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
     // )
     zlib_err := zlib.deflateInit(
         strm=&strm,
-        level=zlib.BEST_SPEED
+        level=zlib.DEFAULT_COMPRESSION
     )
     if zlib_err != zlib.OK {
         return nil, ZLIB_Error(zlib_err)
@@ -507,7 +510,122 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
 }
 
 
-image_write :: proc(img: Image, filename: string, compression: bool = false, allocator:=context.temp_allocator) -> (err: Error) {
+image_write :: proc{image_write_to_file, image_write_to_stream}
+
+
+image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data_file: string = "LOCAL", compression: bool = false, compressed_data: []u8, allocator:=context.temp_allocator) -> (err: Error) {
+    is_single_file := element_data_file == "LOCAL"
+    compressed_data_size := len(compressed_data)
+    compressed_data_buffer : []u8
+
+    // If compression is enabled perform compression if not already provided with compression data
+    // Throw a panic if an element_data_file is provided without compressed_data
+    if compression {
+        if compressed_data_size == 0 {
+            if !is_single_file {
+                fmt.panicf("ERROR : image_write_to_stream - you should not provided an element_data_file without also providing compressed_data! Consider using `image_write_to_file` instead.")
+            }
+            // compute if not provided
+            compressed_data_buffer = data_deflate_zlib(data=img.Data, allocator=allocator) or_return
+            compressed_data_size = len(compressed_data_buffer)
+
+        } else {
+            // if already provided, use that
+            compressed_data_buffer = compressed_data
+        }
+    }
+    defer if compression && len(compressed_data) == 0 { delete(compressed_data_buffer, allocator=allocator) }
+
+    objecttype_str, element_type_str : string
+    parse_ok : bool
+    objecttype_str, parse_ok = fmt.enum_value_to_string(img.ObjectType)
+    ensure(parse_ok)
+    element_type_str, parse_ok = fmt.enum_value_to_string(img.ElementType)
+    ensure(parse_ok)
+
+    to_bool_str :: proc(val: bool) -> string {
+        return val ? "True" : "False"
+    }
+
+    io.write_string(writer_stream, fmt.aprintfln("ObjectType = %v", objecttype_str, allocator=allocator))
+    io.write_string(writer_stream, fmt.aprintfln("NDims = %d", img.NDims, allocator=allocator))
+    io.write_string(writer_stream, fmt.aprintfln("BinaryData = %v", to_bool_str(img.BinaryData), allocator=allocator))
+    io.write_string(writer_stream, fmt.aprintfln("BinaryDataByteOrderMSB = %v", to_bool_str(img.BinaryDataByteOrderMSB), allocator=allocator))
+    io.write_string(writer_stream, fmt.aprintfln("CompressedData = %v", to_bool_str(compression), allocator=allocator))
+    if compression {
+        assert(compressed_data_size > 0)
+        io.write_string(writer_stream, fmt.aprintfln("CompressedDataSize = %d", compressed_data_size, allocator=allocator))
+    }
+
+    iterate_values_and_write :: proc(writer_stream: io.Writer, data: []$T, allocator:=context.allocator) {
+        for e in data {
+            io.write_string(writer_stream, fmt.aprintf(" %v", e, allocator=allocator))
+        }
+        io.write_string(writer_stream, "\n")
+    }
+
+    io.write_string(writer_stream, "TransformMatrix =")
+    iterate_values_and_write(writer_stream, img.TransformMatrix, allocator=allocator)
+    io.write_string(writer_stream, "Offset =")
+    iterate_values_and_write(writer_stream, img.Offset, allocator=allocator)
+
+    // write metadata
+    for k, v in img.MetaData {
+        io.write_string(writer_stream, k)
+        io.write_string(writer_stream, " = ")
+        io.write_string(writer_stream, v)
+        io.write_string(writer_stream, "\n")
+    }
+
+    io.write_string(writer_stream, "ElementSpacing =")
+    iterate_values_and_write(writer_stream, img.ElementSpacing, allocator=allocator)
+    io.write_string(writer_stream, "DimSize =")
+    iterate_values_and_write(writer_stream, img.DimSize, allocator=allocator)
+
+    io.write_string(writer_stream, fmt.aprintfln("ElementType = %s", element_type_str, allocator=allocator))
+    io.write_string(writer_stream, fmt.aprintfln("ElementDataFile = %s", filepath.base(element_data_file), allocator=allocator))
+
+    if is_single_file {
+        if compression {
+            io.write(writer_stream, compressed_data_buffer[:])
+        } else {
+            io.write(writer_stream, img.Data)
+        }
+    }
+
+    return nil
+}
+
+
+image_equal :: proc(a: Image, b: Image) -> bool {
+    return a.ObjectType == b.ObjectType &&
+        a.NDims == b.NDims &&
+        a.ElementType == b.ElementType &&
+        a.ElementNumberOfChannels == b.ElementNumberOfChannels &&
+        a.CompressedData == b.CompressedData &&
+        a.BinaryData == b.BinaryData &&
+        a.BinaryDataByteOrderMSB == b.BinaryDataByteOrderMSB &&
+        a.CompressedDataSize == b.CompressedDataSize &&
+        slice.equal(a.DimSize, b.DimSize) &&
+        slice.equal(a.Offset, b.Offset) &&
+        slice.equal(a.ElementSpacing, b.ElementSpacing) &&
+        slice.equal(a.TransformMatrix, b.TransformMatrix) &&
+        a.ElementDataFile == b.ElementDataFile &&
+        image_metadata_equal(a.MetaData, b.MetaData) &&
+        slice.equal(a.Data, b.Data)
+}
+
+
+image_metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bool {
+    if len(a) != len(b) do return false
+    for k, v in a {
+        if !(k in b) || b[k] != v do return false
+    }
+    return true
+}
+
+
+image_write_to_file :: proc(img: Image, filename: string, compression: bool = false, allocator:=context.temp_allocator) -> (err: Error) {
     is_single_file := strings.ends_with(filename, ".mha")
     ensure(is_single_file || strings.ends_with(filename, ".mhd"))
     element_data_file : string = "LOCAL"
@@ -538,66 +656,17 @@ image_write :: proc(img: Image, filename: string, compression: bool = false, all
 
     // create/open/truncate header file
     fd := os.open(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC) or_return
-    defer os.close(fd)
+    writer_stream := os.stream_from_handle(fd=fd)
+    defer io.close(writer_stream)
 
-    objecttype_str, element_type_str : string
-    parse_ok : bool
-    objecttype_str, parse_ok = fmt.enum_value_to_string(img.ObjectType)
-    ensure(parse_ok)
-    element_type_str, parse_ok = fmt.enum_value_to_string(img.ElementType)
-    ensure(parse_ok)
-
-    to_bool_str :: proc(val: bool) -> string {
-        return val ? "True" : "False"
-    }
-
-    os.write_string(fd, fmt.aprintfln("ObjectType = %v", objecttype_str, allocator=allocator))
-    os.write_string(fd, fmt.aprintfln("NDims = %d", img.NDims, allocator=allocator))
-    os.write_string(fd, fmt.aprintfln("BinaryData = %v", to_bool_str(img.BinaryData), allocator=allocator))
-    os.write_string(fd, fmt.aprintfln("BinaryDataByteOrderMSB = %v", to_bool_str(img.BinaryDataByteOrderMSB), allocator=allocator))
-    os.write_string(fd, fmt.aprintfln("CompressedData = %v", to_bool_str(compression), allocator=allocator))
-    if compression {
-        assert(compressed_data_size > 0)
-        os.write_string(fd, fmt.aprintfln("CompressedDataSize = %d", compressed_data_size, allocator=allocator))
-    }
-
-    iterate_values_and_write :: proc(fd: os.Handle, data: []$T, allocator:=context.allocator) {
-        for e in data {
-            os.write_string(fd, fmt.aprintf(" %v", e, allocator=allocator))
-        }
-        os.write_string(fd, "\n")
-    }
-
-    os.write_string(fd, "TransformMatrix =")
-    iterate_values_and_write(fd, img.TransformMatrix, allocator=allocator)
-    os.write_string(fd, "Offset =")
-    iterate_values_and_write(fd, img.Offset, allocator=allocator)
-
-    // write metadata
-    for k, v in img.MetaData {
-        os.write_string(fd, k)
-        os.write_string(fd, " = ")
-        os.write_string(fd, v)
-        os.write_string(fd, "\n")
-    }
-
-    os.write_string(fd, "ElementSpacing =")
-    iterate_values_and_write(fd, img.ElementSpacing, allocator=allocator)
-    os.write_string(fd, "DimSize =")
-    iterate_values_and_write(fd, img.DimSize, allocator=allocator)
-
-    os.write_string(fd, fmt.aprintfln("ElementType = %v", element_type_str, allocator=allocator))
-    os.write_string(fd, fmt.aprintfln("ElementDataFile = %v", filepath.base(element_data_file), allocator=allocator))
-
-    if is_single_file {
-        if compression {
-            os.write(fd, compressed_data_buffer[:])
-        } else {
-            os.write(fd, img.Data)
-        }
-    }
-
-    return nil
+    return image_write_to_stream(
+        img=img,
+        writer_stream=writer_stream,
+        element_data_file=element_data_file,
+        compression=compression,
+        compressed_data=compressed_data_buffer,
+        allocator=allocator
+    )
 }
 
 
