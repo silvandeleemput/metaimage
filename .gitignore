@@ -2,3 +2,5 @@
 *.pdb
 *.rdi
 *.spall
+/tests/res/old
+/tests/res/*.py
