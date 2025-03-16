@@ -26,8 +26,6 @@ main :: proc()
         output_test_image_file = os.args[2]
     }
 
-    input_image, output_image : metaio.Image
-
     // Read image
     fmt.printfln("Reading %s", input_test_image_file)
     if !os.exists(input_test_image_file) {
@@ -35,13 +33,15 @@ main :: proc()
         return
     }
     start_tick := time.tick_now()
-    err := metaio.image_read(img=&input_image, filename=input_test_image_file, allocator=context.allocator)
+    input_image, err := metaio.image_read(filename=input_test_image_file, allocator=context.allocator)
     if err != nil {
         fmt.printfln("Failed to read image, with error: %v", err)
         return
     }
     defer metaio.image_destroy(img=input_image, allocator=context.allocator)
-    fmt.printfln("%v", input_image)
+    if len(input_image.Data) < 100 {
+        fmt.printfln("%v", input_image)
+    }
     duration := time.tick_since(start_tick)
     free_all(context.temp_allocator)
     fmt.printfln("Time for reading image: %d", duration)
@@ -63,7 +63,7 @@ main :: proc()
 
     // Read written image
     start_tick = time.tick_now()
-    err_read_img2 := metaio.image_read(img=&output_image, filename=output_test_image_file, allocator=context.allocator)
+    output_image, err_read_img2 := metaio.image_read(filename=output_test_image_file, allocator=context.allocator)
     if err_read_img2 != nil {
         fmt.printfln("Failed to read image, with error: %v", err_read_img2)
         return

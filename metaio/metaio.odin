@@ -292,20 +292,20 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
 image_read :: proc{image_read_from_file, image_read_from_stream}
 
 
-image_read_from_file :: proc(img: ^Image, filename: string, allocator := context.allocator) -> (error: Error) {
+image_read_from_file :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
     // open file for reading as an io.Reader Stream
     fd := os.open(filename, os.O_RDONLY) or_return
     data_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
     reader_stream : io.Reader = os.stream_from_handle(fd=fd)
     defer io.close(reader_stream) // this also closes the file handle
-    return image_read_from_stream(img=img, reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
+    return image_read_from_stream(reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
 }
 
-image_read_from_stream :: proc(img: ^Image, reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (error: Error) {
-    image_read_header(img=img, reader_stream=reader_stream, allocator=allocator) or_return
+image_read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, error: Error) {
+    image_read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
 
     // compute required total memory for data buffer
-    total_bytes_required := image_required_data_size(img^)
+    total_bytes_required := image_required_data_size(img)
 
     if img.ElementDataFile == "LOCAL" {
         if img.CompressedData {
@@ -341,7 +341,7 @@ image_read_from_stream :: proc(img: ^Image, reader_stream: io.Reader, data_dir: 
             img.Data = data_buffer[:]
         }
     }
-    return nil
+    return img, nil
 }
 
 // these functions will allocate and free memory based on the temp_allocator of the default_context

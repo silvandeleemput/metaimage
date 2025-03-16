@@ -86,8 +86,7 @@ test_image_zlib_compress :: proc(t: ^testing.T) {
 
 @(test)
 test_image_stream_read_write :: proc(t: ^testing.T) {
-    input_img, output_img: metaio.Image
-    err := metaio.image_read(&input_img, TEST_TINY_COMPRESSED_MHA_FILE, allocator=context.allocator)
+    input_img, err := metaio.image_read(TEST_TINY_COMPRESSED_MHA_FILE, allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
     if err != nil {
         return
@@ -107,7 +106,7 @@ test_image_stream_read_write :: proc(t: ^testing.T) {
         return
     }
 
-    stream_read_error := metaio.image_read_from_stream(img=&output_img, reader_stream=bytes_buffer, data_dir=".", allocator=context.allocator)
+    output_img, stream_read_error := metaio.image_read_from_stream(reader_stream=bytes_buffer, data_dir=".", allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFound read from stream error: %v", stream_read_error, allocator=context.temp_allocator))
     if stream_read_error != nil {
         return
@@ -128,14 +127,13 @@ test_image_stream_read_write :: proc(t: ^testing.T) {
 }
 
 test_image_write :: proc(t: ^testing.T, test_file_name: string, is_single_file: bool, compressed: bool, loc:=#caller_location) {
-    img : metaio.Image
     input_test_image_file := test_file_name
     // Weird unique output test file naming in order to prevent threaded file write collisions.
     output_test_image_file := strings.concatenate({test_file_name[:len(test_file_name)-4], `_write_output_`, (compressed ? `compressed` : `uncompressed`), (is_single_file ? `_mha.mha` : `_mhd.mhd`)}, allocator=context.allocator)
     output_test_image_data_file := strings.concatenate({output_test_image_file[:len(output_test_image_file) - 4], (compressed ? `.zraw` : `.raw`)}, allocator=context.allocator)
     defer delete(output_test_image_file, allocator=context.allocator)
     defer delete(output_test_image_data_file, allocator=context.allocator)
-    err := metaio.image_read(&img, input_test_image_file, allocator=context.allocator)
+    img, err := metaio.image_read(input_test_image_file, allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
     if err != nil {
         return
@@ -157,8 +155,7 @@ test_image_write :: proc(t: ^testing.T, test_file_name: string, is_single_file: 
 }
 
 test_image_read_expected_values :: proc(t: ^testing.T, test_file_name: string, compressed: bool) {
-    img : metaio.Image
-    err := metaio.image_read(&img, test_file_name, allocator=context.allocator)
+    img, err := metaio.image_read(test_file_name, allocator=context.allocator)
     defer metaio.image_destroy(img, allocator=context.allocator)
     free_all(context.temp_allocator)
 
