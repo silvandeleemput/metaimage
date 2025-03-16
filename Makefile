@@ -1,13 +1,16 @@
+SHARED_OPTS = -show-timings
 ifeq ($(OS),Windows_NT)
 	EXT = .exe
+	EXTRA_OPTS = -extra-linker-flags:/LTCG -subsystem:console
 else
 	EXT =
+	EXTRA_OPTS =
 endif
 run:
-	odin run . -disable-assert -no-bounds-check -show-timings -o:speed -out:./metaio_example$(EXT)
+	odin run . -disable-assert -no-bounds-check -o:speed $(SHARED_OPTS) $(EXTRA_OPTS) -out:./metaio_example$(EXT)
 
 debug:
-	odin run . -debug -show-timings -out:./metaio_example_debug$(EXT)
+	odin run . -debug $(SHARED_OPTS) $(EXTRA_OPTS) -out:./metaio_example_debug$(EXT)
 
 test:
-	odin test ./tests -show-timings -out:./metaio_tests$(EXT)
+	odin test ./tests $(SHARED_OPTS) $(EXTRA_OPTS) -out:./metaio_tests$(EXT)
