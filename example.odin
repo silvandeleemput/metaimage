@@ -11,7 +11,7 @@ import "core:time"
 import "core:fmt"
 import "core:strings"
 
-import "metaio"
+import "metaimage"
 
 
 main :: proc()
@@ -36,12 +36,12 @@ main :: proc()
         return
     }
     start_tick := time.tick_now()
-    input_image, err := metaio.image_read(filename=input_image_filepath, allocator=context.allocator)
+    input_image, err := metaimage.read(filename=input_image_filepath, allocator=context.allocator)
     if err != nil {
         fmt.printfln("Failed to read image, with error: %v", err)
         return
     }
-    defer metaio.image_destroy(img=input_image, allocator=context.allocator)
+    defer metaimage.destroy(img=input_image, allocator=context.allocator)
     free_all(context.temp_allocator)
     if len(input_image.Data) < 100 {
         fmt.printfln("%v", input_image)
@@ -52,11 +52,11 @@ main :: proc()
 
     // Write output image
     start_tick = time.tick_now()
-    write_err := metaio.image_write(
+    write_err := metaimage.write(
         img=input_image,
         filename=output_image_filepath,
         compression=true,
-        compression_options=metaio.FAST_COMPRESSION_OPTIONS,
+        compression_options=metaimage.FAST_COMPRESSION_OPTIONS,
         allocator=context.temp_allocator
     )
     if write_err != nil {
@@ -79,17 +79,17 @@ main :: proc()
 
     // Read output image
     start_tick = time.tick_now()
-    output_image, err_read_img2 := metaio.image_read(filename=output_image_filepath, allocator=context.allocator)
+    output_image, err_read_img2 := metaimage.read(filename=output_image_filepath, allocator=context.allocator)
     if err_read_img2 != nil {
         fmt.printfln("Failed to read image, with error: %v", err_read_img2)
         return
     }
-    defer metaio.image_destroy(img=output_image, allocator=context.allocator)
+    defer metaimage.destroy(img=output_image, allocator=context.allocator)
     duration = time.tick_since(start_tick)
     free_all(context.temp_allocator)
     fmt.printfln("Time for reading output image: %d", duration)
     if output_image.CompressedData {
-        req_data_size := metaio.image_required_data_size(output_image)
+        req_data_size := metaimage.required_data_size(output_image)
         fmt.printfln(
             "Data size after compression: %d / %d (%f %%) bytes",
             output_image.CompressedDataSize,

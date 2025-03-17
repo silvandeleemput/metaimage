@@ -9,7 +9,7 @@ import "core:strings"
 import "core:slice"
 import "core:path/filepath"
 
-import "../metaio"
+import "../metaimage"
 
 
 TEST_RES_DIR :: `.\tests\res`
@@ -69,7 +69,7 @@ test_image_write_compressed_mhd :: proc(t: ^testing.T) {
 
 @(test)
 test_image_zlib_decompress :: proc(t: ^testing.T) {
-    uncompressed_data, err := metaio.data_inflate_zlib(data=TEST_COMPRESSED_DATA, expected_output_size=len(TEST_UNCOMPRESSED_DATA), allocator=context.temp_allocator)
+    uncompressed_data, err := metaimage.zlib_inflate_data(data=TEST_COMPRESSED_DATA, expected_output_size=len(TEST_UNCOMPRESSED_DATA), allocator=context.temp_allocator)
     testing.expect(t, err == nil, fmt.aprintf("Decompression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
     if err == nil {
         testing.expect(t, slice.equal(uncompressed_data, TEST_UNCOMPRESSED_DATA), "Decompressed data does not match expected output")
@@ -78,7 +78,7 @@ test_image_zlib_decompress :: proc(t: ^testing.T) {
 
 @(test)
 test_image_zlib_compress :: proc(t: ^testing.T) {
-    compressed_data, err := metaio.data_deflate_zlib(data=TEST_UNCOMPRESSED_DATA, options=metaio.DEFAULT_COMPRESSION_OPTIONS, allocator=context.temp_allocator)
+    compressed_data, err := metaimage.zlib_deflate_data(data=TEST_UNCOMPRESSED_DATA, options=metaimage.DEFAULT_COMPRESSION_OPTIONS, allocator=context.temp_allocator)
     testing.expect(t, err == nil, fmt.aprintf("Compression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
     if err == nil {
         testing.expect(t, slice.equal(compressed_data, TEST_COMPRESSED_DATA), "Compressed data does not match expected output")
@@ -87,7 +87,7 @@ test_image_zlib_compress :: proc(t: ^testing.T) {
 
 @(test)
 test_image_zlib_decompress_fast :: proc(t: ^testing.T) {
-    uncompressed_data, err := metaio.data_inflate_zlib(data=TEST_COMPRESSED_DATA_FAST, expected_output_size=len(TEST_UNCOMPRESSED_DATA), allocator=context.temp_allocator)
+    uncompressed_data, err := metaimage.zlib_inflate_data(data=TEST_COMPRESSED_DATA_FAST, expected_output_size=len(TEST_UNCOMPRESSED_DATA), allocator=context.temp_allocator)
     testing.expect(t, err == nil, fmt.aprintf("Decompression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
     if err == nil {
         testing.expect(t, slice.equal(uncompressed_data, TEST_UNCOMPRESSED_DATA), "Decompressed data does not match expected output")
@@ -96,7 +96,7 @@ test_image_zlib_decompress_fast :: proc(t: ^testing.T) {
 
 @(test)
 test_image_zlib_compress_fast :: proc(t: ^testing.T) {
-    compressed_data, err := metaio.data_deflate_zlib(data=TEST_UNCOMPRESSED_DATA, options=metaio.FAST_COMPRESSION_OPTIONS, allocator=context.temp_allocator)
+    compressed_data, err := metaimage.zlib_deflate_data(data=TEST_UNCOMPRESSED_DATA, options=metaimage.FAST_COMPRESSION_OPTIONS, allocator=context.temp_allocator)
     testing.expect(t, err == nil, fmt.aprintf("Compression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
     if err == nil {
         testing.expect(t, slice.equal(compressed_data, TEST_COMPRESSED_DATA_FAST), "Compressed data does not match expected output")
@@ -105,12 +105,12 @@ test_image_zlib_compress_fast :: proc(t: ^testing.T) {
 
 @(test)
 test_image_stream_read_write :: proc(t: ^testing.T) {
-    input_img, err := metaio.image_read(TEST_TINY_COMPRESSED_MHA_FILE, allocator=context.allocator)
+    input_img, err := metaimage.read(TEST_TINY_COMPRESSED_MHA_FILE, allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
     if err != nil {
         return
     }
-    defer metaio.image_destroy(input_img, allocator=context.allocator)
+    defer metaimage.destroy(input_img, allocator=context.allocator)
 
     buffer : bytes.Buffer
     bytes.buffer_init_allocator(b=&buffer, len=0, cap=1200, allocator=context.allocator)
@@ -119,23 +119,23 @@ test_image_stream_read_write :: proc(t: ^testing.T) {
     defer io.close(bytes_buffer)
 
     compressed_data := []u8{}
-    stream_write_error := metaio.image_write_to_stream(img=input_img, writer_stream=bytes_buffer, element_data_file="LOCAL", compression=true, compressed_data=compressed_data, allocator=context.temp_allocator)
+    stream_write_error := metaimage.write_to_stream(img=input_img, writer_stream=bytes_buffer, element_data_file="LOCAL", compression=true, compressed_data=compressed_data, allocator=context.temp_allocator)
     testing.expect(t, stream_write_error == nil, fmt.aprintf("\nFOUND WRITE ERROR: %v", stream_write_error, allocator=context.temp_allocator))
     if stream_write_error != nil {
         return
     }
 
-    output_img, stream_read_error := metaio.image_read_from_stream(reader_stream=bytes_buffer, data_dir=".", allocator=context.allocator)
+    output_img, stream_read_error := metaimage.read_from_stream(reader_stream=bytes_buffer, data_dir=".", allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFound read from stream error: %v", stream_read_error, allocator=context.temp_allocator))
     if stream_read_error != nil {
         return
     }
-    defer metaio.image_destroy(output_img, allocator=context.allocator)
+    defer metaimage.destroy(output_img, allocator=context.allocator)
     input_img_repr := fmt.aprintf("%v", input_img, allocator=context.temp_allocator)
     output_img_repr := fmt.aprintf("%v", output_img, allocator=context.temp_allocator)
     testing.expect(
         t,
-        metaio.image_equal(input_img, output_img),
+        metaimage.equal(input_img, output_img),
         fmt.aprintf(
             "Image data are expected to be the same, found:\nA:%v\n\nB:%v",
             input_img_repr,
@@ -152,13 +152,13 @@ test_image_write :: proc(t: ^testing.T, test_file_name: string, is_single_file: 
     output_test_image_data_file := strings.concatenate({output_test_image_file[:len(output_test_image_file) - 4], (compressed ? `.zraw` : `.raw`)}, allocator=context.allocator)
     defer delete(output_test_image_file, allocator=context.allocator)
     defer delete(output_test_image_data_file, allocator=context.allocator)
-    img, err := metaio.image_read(input_test_image_file, allocator=context.allocator)
+    img, err := metaimage.read(input_test_image_file, allocator=context.allocator)
     testing.expect(t, err == nil, fmt.aprintf("\nFOUND READ ERROR: %v", err, allocator=context.temp_allocator))
     if err != nil {
         return
     }
-    defer metaio.image_destroy(img, allocator=context.allocator)
-    write_err := metaio.image_write(img, output_test_image_file, compressed)
+    defer metaimage.destroy(img, allocator=context.allocator)
+    write_err := metaimage.write(img, output_test_image_file, compressed)
     testing.expect(t, write_err == nil, fmt.aprintf("\nFOUND WRITE ERROR: %v", write_err, allocator=context.temp_allocator))
     if write_err != nil {
         return
@@ -174,8 +174,8 @@ test_image_write :: proc(t: ^testing.T, test_file_name: string, is_single_file: 
 }
 
 test_image_read_expected_values :: proc(t: ^testing.T, test_file_name: string, compressed: bool) {
-    img, err := metaio.image_read(test_file_name, allocator=context.allocator)
-    defer metaio.image_destroy(img, allocator=context.allocator)
+    img, err := metaimage.read(test_file_name, allocator=context.allocator)
+    defer metaimage.destroy(img, allocator=context.allocator)
     free_all(context.temp_allocator)
 
     EXPECTED_NDIMS            :: 3
@@ -226,6 +226,6 @@ test_image_read_expected_values :: proc(t: ^testing.T, test_file_name: string, c
     }
     testing.expect(t, unexpected_values == 0, "Found unexpected values in the test data")
     testing.expect(t, total_voxels == EXPECTED_TOTAL_VOXELS, "Found unexpected number of voxels in the test data")
-    testing.expect(t, metaio.image_required_data_size(img) == total_voxels, fmt.aprintf("Found data_size (%d) != than the total number of voxels (%d)", metaio.image_required_data_size(img), total_voxels, allocator=context.temp_allocator))
+    testing.expect(t, metaimage.required_data_size(img) == total_voxels, fmt.aprintf("Found data_size (%d) != than the total number of voxels (%d)", metaimage.required_data_size(img), total_voxels, allocator=context.temp_allocator))
     testing.expect(t, total_sum == EXPECTED_DATA_CHECKSUM, "Found unexpected total sum in the test data")
 }

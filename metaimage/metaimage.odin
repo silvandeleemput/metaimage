@@ -1,11 +1,11 @@
-/* Odin package for reading and writing ITK MetaIO Image files
+/* Odin package for reading and writing ITK MetaImage files
 * A subset of features are available, mainly focused on the Image Object Type
 *
 * Specifically the following limitations apply:
 *   * ElementDataFile tag only supports LOCAL and the filename for a single data file
 *     in the same directory typical conventions: .raw/.zraw
 *   * ObjectType only supports Image
-*   * No support for the following MetaObject tags (they will be added to the MetaData dict (string:string) though):
+*   * The following MetaObject tags are not explicitly supported (they will be added to the MetaData dict (string:string) though):
 *     * Comment
 *     * ObjectSubType
 *     * TransformType
@@ -25,7 +25,7 @@
 * email: sil.vandeleemput@radboudumc.nl
 */
 
-package metaio
+package metaimage
 
 import "base:runtime"
 import "core:os"
@@ -212,9 +212,9 @@ create_u16_array :: proc(elements_string: string, n_elements: int, allocator:= c
 }
 
 
-image_required_data_size :: proc(img: Image) -> uint {
+required_data_size :: proc(img: Image) -> uint {
     // compute required total memory for data buffer
-    assert(len(img.DimSize) > 0, "image_required_data_size, requires img.DimSize to be of non-zero length")
+    assert(len(img.DimSize) > 0, "required_data_size, requires img.DimSize to be of non-zero length")
     total_bytes_required : = uint(img.DimSize[0])
     for val in img.DimSize[1:] {
         total_bytes_required = total_bytes_required * uint(val)
@@ -225,7 +225,7 @@ image_required_data_size :: proc(img: Image) -> uint {
 }
 
 
-image_init_header :: proc(img: ^Image) {
+init_header :: proc(img: ^Image) {
     // TODO init this with NDims, and allocate all required memory here etc... ???
     img.ObjectType = .Image
     img.ElementNumberOfChannels = 1
@@ -236,7 +236,7 @@ image_init_header :: proc(img: ^Image) {
 }
 
 
-image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (error: Error) {
+read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (error: Error) {
     file_buffer : [256] byte
 
     buffered_reader := bufio.Reader{}
@@ -247,7 +247,7 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
     )
 
     // set default values
-    image_init_header(img)
+    init_header(img)
 
     // read header information first
     meta_data_map := make(map [string]string, allocator=allocator)
@@ -314,24 +314,24 @@ image_read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := co
 }
 
 
-image_read :: proc{image_read_from_file, image_read_from_stream}
+read :: proc{read_from_file, read_from_stream}
 
 
-image_read_from_file :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
+read_from_file :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
     // open file for reading as an io.Reader Stream
     fd := os.open(filename, os.O_RDONLY) or_return
     data_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
     reader_stream : io.Reader = os.stream_from_handle(fd=fd)
     defer io.close(reader_stream) // this also closes the file handle
-    return image_read_from_stream(reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
+    return read_from_stream(reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
 }
 
 
-image_read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, error: Error) {
-    image_read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
+read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, error: Error) {
+    read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
 
     // compute required total memory for data buffer
-    total_bytes_required := image_required_data_size(img)
+    total_bytes_required := required_data_size(img)
 
     if img.ElementDataFile == "LOCAL" {
         if img.CompressedData {
@@ -339,7 +339,7 @@ image_read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".",
             data_buffer_size := io.size(reader_stream) or_return // how much bytes left ?
             data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
             io.read(s=reader_stream, p=data_encoded_buffer[:]) or_return
-            inflated_data := data_inflate_zlib(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
+            inflated_data := zlib_inflate_data(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
             img.Data = inflated_data
         } else {
             // allocate memory for buffer and read everything in one go
@@ -358,7 +358,7 @@ image_read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".",
             data_buffer_size := os.file_size(fd_data) or_return
             data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
             os.read(fd=fd_data, data=data_encoded_buffer) or_return
-            inflated_data := data_inflate_zlib(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
+            inflated_data := zlib_inflate_data(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
             img.Data = inflated_data
         } else {
             // allocate memory for buffer and read everything in one go
@@ -393,7 +393,7 @@ zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
 }
 
 
-data_inflate_zlib :: proc(data: []u8, expected_output_size: uint, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
+zlib_inflate_data :: proc(data: []u8, expected_output_size: uint, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
     // Using vendor zlib here, as it is way faster than the compress.zlib odin version
     // Using vender zlib we can also skip the Adler32 checksum, which is very time consuming for large files
     // We implement chunk size buffering like in ITK to prevent zlib issues with 32 bit c.uint and c.ulong on very large files...
@@ -451,7 +451,7 @@ data_inflate_zlib :: proc(data: []u8, expected_output_size: uint, allocator:=con
 }
 
 
-data_deflate_zlib :: proc(data: []u8, options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.allocator) -> (deflated_data: []u8, err: Error) {
+zlib_deflate_data :: proc(data: []u8, options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.allocator) -> (deflated_data: []u8, err: Error) {
     // Using vendor zlib here as there is no odin version implemented yet for deflate
     // This implementation allocates more output memory if required (for small images)...
     // We implement chunk size buffering like in ITK to prevent zlib issues with 32 bit c.uint and c.ulong on very large files...
@@ -533,10 +533,10 @@ data_deflate_zlib :: proc(data: []u8, options: ZLIBCompressionOptions = DEFAULT_
 }
 
 
-image_write :: proc{image_write_to_file, image_write_to_stream}
+write :: proc{write_to_file, write_to_stream}
 
 
-image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data_file: string = "LOCAL", compression: bool = false, compressed_data: []u8, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
+write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data_file: string = "LOCAL", compression: bool = false, compressed_data: []u8, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
     is_single_file := element_data_file == "LOCAL"
     compressed_data_size := len(compressed_data)
     compressed_data_buffer : []u8
@@ -549,7 +549,7 @@ image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data
                 fmt.panicf("ERROR : image_write_to_stream - you should not provided an element_data_file without also providing compressed_data! Consider using `image_write_to_file` instead.")
             }
             // compute if not provided
-            compressed_data_buffer = data_deflate_zlib(data=img.Data, options=compression_options, allocator=allocator) or_return
+            compressed_data_buffer = zlib_deflate_data(data=img.Data, options=compression_options, allocator=allocator) or_return
             compressed_data_size = len(compressed_data_buffer)
 
         } else {
@@ -620,26 +620,26 @@ image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data
 }
 
 
-image_equal :: proc(a: Image, b: Image) -> bool {
+equal :: proc(a: Image, b: Image) -> bool {
     return a.ObjectType == b.ObjectType &&
         a.NDims == b.NDims &&
         a.ElementType == b.ElementType &&
         a.ElementNumberOfChannels == b.ElementNumberOfChannels &&
-        a.CompressedData == b.CompressedData &&
+        //a.CompressedData == b.CompressedData &&
         a.BinaryData == b.BinaryData &&
         a.BinaryDataByteOrderMSB == b.BinaryDataByteOrderMSB &&
-        a.CompressedDataSize == b.CompressedDataSize &&
+        //a.CompressedDataSize == b.CompressedDataSize &&
         slice.equal(a.DimSize, b.DimSize) &&
         slice.equal(a.Offset, b.Offset) &&
         slice.equal(a.ElementSpacing, b.ElementSpacing) &&
         slice.equal(a.TransformMatrix, b.TransformMatrix) &&
-        a.ElementDataFile == b.ElementDataFile &&
-        image_metadata_equal(a.MetaData, b.MetaData) &&
+        //a.ElementDataFile == b.ElementDataFile &&
+        metadata_equal(a.MetaData, b.MetaData) &&
         slice.equal(a.Data, b.Data)
 }
 
 
-image_metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bool {
+metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bool {
     if len(a) != len(b) do return false
     for k, v in a {
         if !(k in b) || b[k] != v do return false
@@ -648,7 +648,7 @@ image_metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bo
 }
 
 
-image_write_to_file :: proc(img: Image, filename: string, compression: bool = false, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
+write_to_file :: proc(img: Image, filename: string, compression: bool = false, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
     is_single_file := strings.ends_with(filename, ".mha")
     ensure(is_single_file || strings.ends_with(filename, ".mhd"))
     element_data_file : string = "LOCAL"
@@ -658,7 +658,7 @@ image_write_to_file :: proc(img: Image, filename: string, compression: bool = fa
     compressed_data_size : u64
     compressed_data_buffer : []u8
     if compression {
-        compressed_data_buffer = data_deflate_zlib(data=img.Data, options=compression_options, allocator=allocator) or_return
+        compressed_data_buffer = zlib_deflate_data(data=img.Data, options=compression_options, allocator=allocator) or_return
         compressed_data_size = u64(len(compressed_data_buffer))
     }
     defer if compression { delete(compressed_data_buffer, allocator=allocator) }
@@ -682,7 +682,7 @@ image_write_to_file :: proc(img: Image, filename: string, compression: bool = fa
     writer_stream := os.stream_from_handle(fd=fd)
     defer io.close(writer_stream)
 
-    return image_write_to_stream(
+    return write_to_stream(
         img=img,
         writer_stream=writer_stream,
         element_data_file=element_data_file,
@@ -694,7 +694,7 @@ image_write_to_file :: proc(img: Image, filename: string, compression: bool = fa
 }
 
 
-image_destroy :: proc(img: Image, allocator:=context.allocator) {
+destroy :: proc(img: Image, allocator:=context.allocator) {
     delete(img.DimSize, allocator=allocator)
     delete(img.TransformMatrix, allocator=allocator)
     delete(img.ElementSpacing, allocator=allocator)
