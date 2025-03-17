@@ -30,6 +30,7 @@ package metaio
 import "base:runtime"
 import "core:os"
 import "core:fmt"
+import "core:c"
 import "core:strings"
 import "core:testing"
 import "core:slice"
@@ -158,6 +159,30 @@ Error :: union {
     os.Platform_Error,
     mem.Allocator_Error,
     ZLIB_Error,
+}
+
+
+ZLIBCompressionOptions :: struct {
+    level : c.int,
+    memLevel : c.int,
+    windowBits : c.int,
+    strategy : c.int,
+}
+
+
+DEFAULT_COMPRESSION_OPTIONS :: ZLIBCompressionOptions{
+    level = zlib.DEFAULT_COMPRESSION,
+    memLevel = 8,
+    windowBits = 15, // only deflate zlib (default)
+    strategy = zlib.DEFAULT_STRATEGY
+}
+
+
+FAST_COMPRESSION_OPTIONS :: ZLIBCompressionOptions{
+    level = zlib.BEST_SPEED,
+    memLevel = 8,
+    windowBits = 15, // only deflate zlib (default)
+    strategy = zlib.RLE
 }
 
 
@@ -301,6 +326,7 @@ image_read_from_file :: proc(filename: string, allocator := context.allocator) -
     return image_read_from_stream(reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
 }
 
+
 image_read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, error: Error) {
     image_read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
 
@@ -344,6 +370,7 @@ image_read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".",
     return img, nil
 }
 
+
 // these functions will allocate and free memory based on the temp_allocator of the default_context
 zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
     context = runtime.default_context()
@@ -354,6 +381,7 @@ zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uI
     return raw_data(res)
 }
 
+
 zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
 {
     context = runtime.default_context()
@@ -363,6 +391,7 @@ zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
     }
     return
 }
+
 
 data_inflate_zlib :: proc(data: []u8, expected_output_size: uint, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
     // Using vendor zlib here, as it is way faster than the compress.zlib odin version
@@ -421,7 +450,8 @@ data_inflate_zlib :: proc(data: []u8, expected_output_size: uint, allocator:=con
     return uncompressed_data[:expected_output_size], nil
 }
 
-data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated_data: []u8, err: Error) {
+
+data_deflate_zlib :: proc(data: []u8, options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.allocator) -> (deflated_data: []u8, err: Error) {
     // Using vendor zlib here as there is no odin version implemented yet for deflate
     // This implementation allocates more output memory if required (for small images)...
     // We implement chunk size buffering like in ITK to prevent zlib issues with 32 bit c.uint and c.ulong on very large files...
@@ -440,21 +470,14 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
     output_buffer := make([]u8, chunk_size, allocator=allocator) or_return
     compressed_data := make([]u8, buffer_out_size, allocator=allocator) or_return
 
-    // This code can be used to tweak strategy / level / memLevel
-    // deflateInit uses strategy=zlib.DEFAULT_STRATEGY=0, with memLevel=8, level=zlib.BEST_SPEED=1
-    // ZLIB_MEM_LEVEL :: 8
-    // ZLIB_DEF_WBITS :: 15 // only deflate zlib
-    // zlib_err := zlib.deflateInit2(
-    //     strm=&strm,
-    //     level=zlib.BEST_SPEED,
-    //     method=zlib.DEFLATED,
-    //     windowBits=ZLIB_DEF_WBITS,
-    //     memLevel=ZLIB_MEM_LEVEL,
-    //     strategy=zlib.RLE
-    // )
-    zlib_err := zlib.deflateInit(
+    // We can use the options to tweak strategy / level / memLevel
+    zlib_err := zlib.deflateInit2(
         strm=&strm,
-        level=zlib.DEFAULT_COMPRESSION
+        level=options.level,
+        method=zlib.DEFLATED,  // only option
+        windowBits=options.windowBits,
+        memLevel=options.memLevel,
+        strategy=options.strategy,
     )
     if zlib_err != zlib.OK {
         return nil, ZLIB_Error(zlib_err)
@@ -513,7 +536,7 @@ data_deflate_zlib :: proc(data: []u8, allocator:=context.allocator) -> (deflated
 image_write :: proc{image_write_to_file, image_write_to_stream}
 
 
-image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data_file: string = "LOCAL", compression: bool = false, compressed_data: []u8, allocator:=context.temp_allocator) -> (err: Error) {
+image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data_file: string = "LOCAL", compression: bool = false, compressed_data: []u8, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
     is_single_file := element_data_file == "LOCAL"
     compressed_data_size := len(compressed_data)
     compressed_data_buffer : []u8
@@ -526,7 +549,7 @@ image_write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data
                 fmt.panicf("ERROR : image_write_to_stream - you should not provided an element_data_file without also providing compressed_data! Consider using `image_write_to_file` instead.")
             }
             // compute if not provided
-            compressed_data_buffer = data_deflate_zlib(data=img.Data, allocator=allocator) or_return
+            compressed_data_buffer = data_deflate_zlib(data=img.Data, options=compression_options, allocator=allocator) or_return
             compressed_data_size = len(compressed_data_buffer)
 
         } else {
@@ -625,7 +648,7 @@ image_metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bo
 }
 
 
-image_write_to_file :: proc(img: Image, filename: string, compression: bool = false, allocator:=context.temp_allocator) -> (err: Error) {
+image_write_to_file :: proc(img: Image, filename: string, compression: bool = false, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
     is_single_file := strings.ends_with(filename, ".mha")
     ensure(is_single_file || strings.ends_with(filename, ".mhd"))
     element_data_file : string = "LOCAL"
@@ -635,7 +658,7 @@ image_write_to_file :: proc(img: Image, filename: string, compression: bool = fa
     compressed_data_size : u64
     compressed_data_buffer : []u8
     if compression {
-        compressed_data_buffer = data_deflate_zlib(data=img.Data, allocator=allocator) or_return
+        compressed_data_buffer = data_deflate_zlib(data=img.Data, options=compression_options, allocator=allocator) or_return
         compressed_data_size = u64(len(compressed_data_buffer))
     }
     defer if compression { delete(compressed_data_buffer, allocator=allocator) }
@@ -665,6 +688,7 @@ image_write_to_file :: proc(img: Image, filename: string, compression: bool = fa
         element_data_file=element_data_file,
         compression=compression,
         compressed_data=compressed_data_buffer,
+        compression_options=compression_options,
         allocator=allocator
     )
 }
@@ -683,4 +707,3 @@ image_destroy :: proc(img: Image, allocator:=context.allocator) {
     delete(img.MetaData)
     delete(img.Data, allocator=allocator)
 }
-

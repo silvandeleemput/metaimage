@@ -24,6 +24,7 @@ TEST_TINY_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_002_uncompressed.mha`
 
 TEST_UNCOMPRESSED_DATA :: []u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0}
 TEST_COMPRESSED_DATA :: []u8{120, 156, 99, 96, 128, 2, 22, 38, 6, 56, 96, 6, 97, 70, 48, 19, 0, 0, 228, 0, 14}
+TEST_COMPRESSED_DATA_FAST :: []u8{120, 1, 99, 128, 1, 22, 38, 6, 56, 96, 102, 96, 96, 96, 102, 100, 0, 1, 0, 0, 228, 0, 14}
 
 
 @(test)
@@ -77,10 +78,28 @@ test_image_zlib_decompress :: proc(t: ^testing.T) {
 
 @(test)
 test_image_zlib_compress :: proc(t: ^testing.T) {
-    compressed_data, err := metaio.data_deflate_zlib(data=TEST_UNCOMPRESSED_DATA, allocator=context.temp_allocator)
+    compressed_data, err := metaio.data_deflate_zlib(data=TEST_UNCOMPRESSED_DATA, options=metaio.DEFAULT_COMPRESSION_OPTIONS, allocator=context.temp_allocator)
     testing.expect(t, err == nil, fmt.aprintf("Compression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
     if err == nil {
         testing.expect(t, slice.equal(compressed_data, TEST_COMPRESSED_DATA), "Compressed data does not match expected output")
+    }
+}
+
+@(test)
+test_image_zlib_decompress_fast :: proc(t: ^testing.T) {
+    uncompressed_data, err := metaio.data_inflate_zlib(data=TEST_COMPRESSED_DATA_FAST, expected_output_size=len(TEST_UNCOMPRESSED_DATA), allocator=context.temp_allocator)
+    testing.expect(t, err == nil, fmt.aprintf("Decompression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
+    if err == nil {
+        testing.expect(t, slice.equal(uncompressed_data, TEST_UNCOMPRESSED_DATA), "Decompressed data does not match expected output")
+    }
+}
+
+@(test)
+test_image_zlib_compress_fast :: proc(t: ^testing.T) {
+    compressed_data, err := metaio.data_deflate_zlib(data=TEST_UNCOMPRESSED_DATA, options=metaio.FAST_COMPRESSION_OPTIONS, allocator=context.temp_allocator)
+    testing.expect(t, err == nil, fmt.aprintf("Compression operation returned unexpected error: %v", err, allocator=context.temp_allocator))
+    if err == nil {
+        testing.expect(t, slice.equal(compressed_data, TEST_COMPRESSED_DATA_FAST), "Compressed data does not match expected output")
     }
 }
 

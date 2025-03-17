@@ -9,7 +9,7 @@ package example
 import "core:os"
 import "core:time"
 import "core:fmt"
-
+import "core:strings"
 
 import "metaio"
 
@@ -17,7 +17,7 @@ import "metaio"
 main :: proc()
 {
     input_test_image_file := `.\tests\res\test_002.mha`
-    output_test_image_file := `.\tests\res\test_001_compressed_write_test.mhd`
+    output_test_image_file := `.\tmp_write_test.mhd`
 
     if len(os.args) > 1 {
         input_test_image_file = os.args[1]
@@ -51,11 +51,21 @@ main :: proc()
     write_err := metaio.image_write(
         img=input_image,
         filename=output_test_image_file,
-        compression=true
+        compression=true,
+        compression_options=metaio.FAST_COMPRESSION_OPTIONS
     )
     if write_err != nil {
         fmt.printfln("Failed to write file to %s with error: %v", output_test_image_file, write_err)
         return
+    }
+    // cleanup generated files
+    defer {
+        if os.exists(output_test_image_file) do os.unlink(output_test_image_file)
+        exts : [2]string = {"raw", "zraw"}
+        for data_ext in exts {
+            output_data_file := strings.concatenate({output_test_image_file[:len(output_test_image_file)-3], data_ext}, allocator=context.temp_allocator)
+            if os.exists(output_data_file) do os.unlink(output_data_file)
+        }
     }
     duration = time.tick_since(start_tick)
     free_all(context.temp_allocator)
