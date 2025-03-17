@@ -1,4 +1,4 @@
-/* Example for working with the MetaIO Odin package
+/* Example using the the MetaIO Odin package
 *
 * Author: Sil van de Leemput
 * email: sil.vandeleemput@radboudumc.nl
@@ -16,54 +16,59 @@ import "metaio"
 
 main :: proc()
 {
-    input_test_image_file := `.\tests\res\test_002.mha`
-    output_test_image_file := `.\tmp_write_test.mhd`
+    // Set the default filepath to the input image to use and a filepath to an output image
+    input_image_filepath := `.\tests\res\test_002.mha`
+    output_image_filepath := `.\tmp_write_test.mhd`
 
+    // Defaults can be overriden by providing command line arguments
     if len(os.args) > 1 {
-        input_test_image_file = os.args[1]
+        input_image_filepath = os.args[1]
     }
     if len(os.args) > 2 {
-        output_test_image_file = os.args[2]
+        output_image_filepath = os.args[2]
     }
 
-    // Read image
-    fmt.printfln("Reading %s", input_test_image_file)
-    if !os.exists(input_test_image_file) {
-        fmt.printfln("Could not find the file %s", input_test_image_file)
+
+    // Read input image
+    fmt.printfln("Reading %s", input_image_filepath)
+    if !os.exists(input_image_filepath) {
+        fmt.printfln("Could not find the file %s", input_image_filepath)
         return
     }
     start_tick := time.tick_now()
-    input_image, err := metaio.image_read(filename=input_test_image_file, allocator=context.allocator)
+    input_image, err := metaio.image_read(filename=input_image_filepath, allocator=context.allocator)
     if err != nil {
         fmt.printfln("Failed to read image, with error: %v", err)
         return
     }
     defer metaio.image_destroy(img=input_image, allocator=context.allocator)
+    free_all(context.temp_allocator)
     if len(input_image.Data) < 100 {
         fmt.printfln("%v", input_image)
     }
     duration := time.tick_since(start_tick)
-    free_all(context.temp_allocator)
     fmt.printfln("Time for reading image: %d", duration)
 
-    // Write image
+
+    // Write output image
     start_tick = time.tick_now()
     write_err := metaio.image_write(
         img=input_image,
-        filename=output_test_image_file,
+        filename=output_image_filepath,
         compression=true,
-        compression_options=metaio.FAST_COMPRESSION_OPTIONS
+        compression_options=metaio.FAST_COMPRESSION_OPTIONS,
+        allocator=context.temp_allocator
     )
     if write_err != nil {
-        fmt.printfln("Failed to write file to %s with error: %v", output_test_image_file, write_err)
+        fmt.printfln("Failed to write file to %s with error: %v", output_image_filepath, write_err)
         return
     }
     // cleanup generated files
     defer {
-        if os.exists(output_test_image_file) do os.unlink(output_test_image_file)
+        if os.exists(output_image_filepath) do os.unlink(output_image_filepath)
         exts : [2]string = {"raw", "zraw"}
         for data_ext in exts {
-            output_data_file := strings.concatenate({output_test_image_file[:len(output_test_image_file)-3], data_ext}, allocator=context.temp_allocator)
+            output_data_file := strings.concatenate({output_image_filepath[:len(output_image_filepath)-3], data_ext}, allocator=context.temp_allocator)
             if os.exists(output_data_file) do os.unlink(output_data_file)
         }
     }
@@ -71,9 +76,10 @@ main :: proc()
     free_all(context.temp_allocator)
     fmt.printfln("Time for writing image: %d", duration)
 
-    // Read written image
+
+    // Read output image
     start_tick = time.tick_now()
-    output_image, err_read_img2 := metaio.image_read(filename=output_test_image_file, allocator=context.allocator)
+    output_image, err_read_img2 := metaio.image_read(filename=output_image_filepath, allocator=context.allocator)
     if err_read_img2 != nil {
         fmt.printfln("Failed to read image, with error: %v", err_read_img2)
         return
@@ -81,7 +87,7 @@ main :: proc()
     defer metaio.image_destroy(img=output_image, allocator=context.allocator)
     duration = time.tick_since(start_tick)
     free_all(context.temp_allocator)
-    fmt.printfln("Time for reading written image: %d", duration)
+    fmt.printfln("Time for reading output image: %d", duration)
     if output_image.CompressedData {
         req_data_size := metaio.image_required_data_size(output_image)
         fmt.printfln(
