@@ -1,4 +1,4 @@
-/* Example using the the MetaIO Odin package
+/* Example using the the MetaImage Odin package
 *
 * Author: Sil van de Leemput
 * email: sil.vandeleemput@radboudumc.nl
@@ -20,14 +20,13 @@ main :: proc()
     input_image_filepath := `.\tests\res\test_002.mha`
     output_image_filepath := `.\tmp_write_test.mhd`
 
-    // Defaults can be overriden by providing command line arguments
+    // Default input and output images can be overriden by providing command line arguments
     if len(os.args) > 1 {
         input_image_filepath = os.args[1]
     }
     if len(os.args) > 2 {
         output_image_filepath = os.args[2]
     }
-
 
     // Read input image
     fmt.printfln("Reading %s", input_image_filepath)

@@ -1,29 +1,42 @@
-/* Odin package for reading and writing ITK MetaImage files
-* A subset of features are available, mainly focused on the Image Object Type
+/**********************************************************************************
 *
-* Specifically the following limitations apply:
-*   * ElementDataFile tag only supports LOCAL and the filename for a single data file
-*     in the same directory typical conventions: .raw/.zraw
-*   * ObjectType only supports Image
-*   * The following MetaObject tags are not explicitly supported (they will be added to the MetaData dict (string:string) though):
-*     * Comment
-*     * ObjectSubType
-*     * TransformType
-*     * Name
-*     * ID
-*     * ParentID
-*     * ElementByteOrderMSB
-*     * Color
-*     * AnatomicalOrientation
-*     * HeaderSize
-*     * Modality
-*     * SequenceID
-*     * ElementMin
-*     * ElementMax
+* MetaImage v1.0.0 - An Odin package for reading and writing ITK MetaImage files
 *
-* Author: Sil van de Leemput
-* email: sil.vandeleemput@radboudumc.nl
-*/
+* FEATURES
+*  - A single file package which implements reading and writing
+*    (.mha) and (.mhd/.raw/.zraw) MetaImages
+*  - Support for zlib compression/decompression using vendor:zlib
+*    with customization options using metaio.ZLIBCompressionOptions struct
+*  - Support for file and stream IO
+*  - Support for metadata in a string:string dictionary (img.MetaData)
+*  - Tested with tests for core functionality under Windows and Linux
+*
+* LIMITATIONS
+*  - No support for MetaImage files with multiple external data files,
+*    i.e. ElementDataFile can either be set to LOCAL or set to a filename pointing
+*    to a single data file (.raw/.zraw)
+*  - ObjectType only supports Image
+*  - Some MetaObject tags and their associated values are not explicitly
+*    supported. However, when present in the header they will be implicitly available
+*    in the MetaData dict (img.MetaData) as string:string pairs.
+*    The following tags are not explictily supported:
+*     - Comment
+*     - ObjectSubType
+*     - TransformType
+*     - Name
+*     - ID
+*     - ParentID
+*     - ElementByteOrderMSB
+*     - Color
+*     - AnatomicalOrientation
+*     - HeaderSize
+*     - Modality
+*     - SequenceID
+*     - ElementMin
+*     - ElementMax
+*
+*
+*************************************************************************************/
 
 package metaimage
 
@@ -44,6 +57,15 @@ import "core:bytes"
 import "core:time"
 
 import "vendor:zlib"
+
+
+// Version numbering scheme.
+//
+// See https://semver.org/
+VERSION_MAJOR :: 1
+VERSION_MINOR :: 0
+VERSION_PATCH :: 0
+VERSION :: "1.0.0"
 
 
 ObjectType :: enum u8 {
@@ -620,25 +642,30 @@ write_to_stream :: proc(img: Image, writer_stream: io.Writer, element_data_file:
 }
 
 
+// NOTE: This equal procedure does not check equality for:
+// * if the data was compressed (CompressedData)
+// * the data compression size (CompressedDataSize)
+// * or if the data was stored in a single or multiple files (ElementDataFile)
 equal :: proc(a: Image, b: Image) -> bool {
     return a.ObjectType == b.ObjectType &&
         a.NDims == b.NDims &&
         a.ElementType == b.ElementType &&
         a.ElementNumberOfChannels == b.ElementNumberOfChannels &&
-        //a.CompressedData == b.CompressedData &&
         a.BinaryData == b.BinaryData &&
         a.BinaryDataByteOrderMSB == b.BinaryDataByteOrderMSB &&
-        //a.CompressedDataSize == b.CompressedDataSize &&
         slice.equal(a.DimSize, b.DimSize) &&
         slice.equal(a.Offset, b.Offset) &&
         slice.equal(a.ElementSpacing, b.ElementSpacing) &&
         slice.equal(a.TransformMatrix, b.TransformMatrix) &&
+        //a.CompressedData == b.CompressedData &&
         //a.ElementDataFile == b.ElementDataFile &&
+        //a.CompressedDataSize == b.CompressedDataSize &&
         metadata_equal(a.MetaData, b.MetaData) &&
         slice.equal(a.Data, b.Data)
 }
 
 
+// NOTE: this equal procedure does not check for the order of the keys in the map
 metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bool {
     if len(a) != len(b) do return false
     for k, v in a {
