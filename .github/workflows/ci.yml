@@ -1,0 +1,32 @@
+name: CI MetaImage
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Odin
+      run: |
+        git clone https://github.com/odin-lang/Odin odin
+        cd odin
+        git checkout dev-2025-03
+        make release-native
+        export PATH="$(pwd):$PATH"
+
+    - name: Run tests
+      run: make test
+
+    - name: Run example (debug)
+      run: make debug
+
+    - name: Run example
+      run: make run
