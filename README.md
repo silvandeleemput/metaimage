@@ -1,5 +1,7 @@
 # MetaImage Odin library
 
+![CI MetaImage](https://github.com/silvandeleemput/metaimage/actions/workflows/ci.yml/badge.svg?branch=main)
+
 * Version: v1.0.0,
 * Build and tested with: ODIN dev-2025-03
 
