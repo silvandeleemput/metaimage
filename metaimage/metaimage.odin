@@ -675,6 +675,18 @@ metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bool {
 }
 
 
+_open_file_for_writing :: proc(filename: string) -> (fd : os.Handle, err : os.Error) {
+    mode: int = 0
+    when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+        // 664 (owner read, write; group read, write; others read)
+        mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH
+    }
+    // create/open/truncate by default
+    fd_data := os.open(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode) or_return
+    return fd_data, nil
+}
+
+
 write_to_file :: proc(img: Image, filename: string, compression: bool = false, compression_options: ZLIBCompressionOptions = DEFAULT_COMPRESSION_OPTIONS, allocator:=context.temp_allocator) -> (err: Error) {
     is_single_file := strings.ends_with(filename, ".mha")
     ensure(is_single_file || strings.ends_with(filename, ".mhd"))
@@ -694,7 +706,7 @@ write_to_file :: proc(img: Image, filename: string, compression: bool = false, c
     if !is_single_file {
         element_data_file = strings.concatenate({filename[:len(filename) - 3], (compression ? "zraw" : "raw")}, allocator=allocator)
         err_open : os.Error
-        fd_data := os.open(element_data_file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC) or_return
+        fd_data := _open_file_for_writing(element_data_file) or_return
         defer os.close(fd_data)
         // write the data compressed or uncompressed
         if compression {
@@ -704,8 +716,7 @@ write_to_file :: proc(img: Image, filename: string, compression: bool = false, c
         }
     }
 
-    // create/open/truncate header file
-    fd := os.open(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC) or_return
+    fd := _open_file_for_writing(filename) or_return
     writer_stream := os.stream_from_handle(fd=fd)
     defer io.close(writer_stream)
 
