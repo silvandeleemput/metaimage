@@ -12,15 +12,15 @@ import "core:path/filepath"
 import "../metaimage"
 
 
-TEST_RES_DIR :: `.\tests\res`
+TEST_RES_DIR :: `./tests/res`
 
-TEST_COMPRESSED_MHD_FILE :: TEST_RES_DIR + `\test_001.mhd`
-TEST_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_001.mha`
-TEST_UNCOMPRESSED_MHD_FILE :: TEST_RES_DIR + `\test_001_uncompressed.mhd`
-TEST_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_001_uncompressed.mha`
+TEST_COMPRESSED_MHD_FILE :: TEST_RES_DIR + `/test_001.mhd`
+TEST_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_001.mha`
+TEST_UNCOMPRESSED_MHD_FILE :: TEST_RES_DIR + `/test_001_uncompressed.mhd`
+TEST_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_001_uncompressed.mha`
 
-TEST_TINY_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_002.mha`
-TEST_TINY_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `\test_002_uncompressed.mha`
+TEST_TINY_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_002.mha`
+TEST_TINY_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_002_uncompressed.mha`
 
 TEST_UNCOMPRESSED_DATA :: []u8{0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 3, 1, 0, 0, 0, 0, 0}
 TEST_COMPRESSED_DATA :: []u8{120, 156, 99, 96, 128, 2, 22, 38, 6, 56, 96, 6, 97, 70, 48, 19, 0, 0, 228, 0, 14}

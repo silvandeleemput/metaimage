@@ -17,8 +17,8 @@ import "metaimage"
 main :: proc()
 {
     // Set the default filepath to the input image to use and a filepath to an output image
-    input_image_filepath := `.\tests\res\test_002.mha`
-    output_image_filepath := `.\tmp_write_test.mhd`
+    input_image_filepath := `./tests/res/test_002.mha`
+    output_image_filepath := `./tmp_write_test.mhd`
 
     // Default input and output images can be overriden by providing command line arguments
     if len(os.args) > 1 {
