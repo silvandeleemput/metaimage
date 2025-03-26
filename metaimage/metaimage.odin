@@ -679,7 +679,7 @@ _open_file_for_writing :: proc(filename: string) -> (fd : os.Handle, err : os.Er
     mode: int = 0
     when ODIN_OS == .Linux || ODIN_OS == .Darwin {
         // 664 (owner read, write; group read, write; others read)
-        mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH
+        mode = os.S_IRUSR | os.S_IWUSR | os.S_IRGRP | os.S_IWGRP | os.S_IROTH
     }
     // create/open/truncate by default
     fd_data := os.open(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode) or_return
