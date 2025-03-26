@@ -21,12 +21,10 @@ jobs:
         git checkout dev-2025-03
         make release-native
         echo "Installed Odin in: $(pwd)"
-        export PATH="$(pwd):$PATH"
+        echo "$(pwd)" >> $GITHUB_PATH
 
     - name: Run tests
-      run: |
-        echo "Running tests from: $(pwd)"
-        make test
+      run: make test
 
     - name: Run example (debug)
       run: make debug
