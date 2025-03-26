@@ -64,11 +64,11 @@ main :: proc()
     }
     // cleanup generated files
     defer {
-        if os.exists(output_image_filepath) do os.unlink(output_image_filepath)
+        if os.exists(output_image_filepath) do os.remove(output_image_filepath)
         exts : [2]string = {"raw", "zraw"}
         for data_ext in exts {
             output_data_file := strings.concatenate({output_image_filepath[:len(output_image_filepath)-3], data_ext}, allocator=context.temp_allocator)
-            if os.exists(output_data_file) do os.unlink(output_data_file)
+            if os.exists(output_data_file) do os.remove(output_data_file)
         }
     }
     duration = time.tick_since(start_tick)

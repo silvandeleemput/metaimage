@@ -163,8 +163,8 @@ test_image_write :: proc(t: ^testing.T, test_file_name: string, is_single_file: 
     if write_err != nil {
         return
     }
-    defer if os.exists(output_test_image_file) { os.unlink(output_test_image_file) }
-    defer if os.exists(output_test_image_data_file) { os.unlink(output_test_image_data_file) }
+    defer if os.exists(output_test_image_file) { os.remove(output_test_image_file) }
+    defer if os.exists(output_test_image_data_file) { os.remove(output_test_image_data_file) }
     testing.expect(t, os.exists(input_test_image_file), fmt.aprintf("Input test file does not exist: %s", input_test_image_file, allocator=context.temp_allocator))
     testing.expect(t, os.exists(output_test_image_file), fmt.aprintf("Output test file does not exist: %s", output_test_image_file, allocator=context.temp_allocator))
     if !is_single_file {
