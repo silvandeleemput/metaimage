@@ -20,7 +20,7 @@ https://odin-lang.org/
 * Support for zlib compression/decompression using vendor:zlib with customization options using metaio.ZLIBCompressionOptions struct
 * Support for file and stream IO
 * Support for metadata in a string:string dictionary (img.MetaData)
-* Tests for core functionality under Windows and Linux
+* Tested under Windows and Linux (with Linux CI tests)
 
 ## Disclaimer
 
