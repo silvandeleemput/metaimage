@@ -20,7 +20,7 @@ https://odin-lang.org/
 * Support for zlib compression/decompression using vendor:zlib with customization options using metaio.ZLIBCompressionOptions struct
 * Support for file and stream IO
 * Support for metadata in a string:string dictionary (img.MetaData)
-* Tested under Windows and Linux (with Linux CI tests)
+* Tested for Windows and Linux (with Linux CI tests)
 
 ## Disclaimer
 
@@ -111,28 +111,53 @@ main :: proc () {
 
 ## Example
 
-This repository also has an extended example file: `example.odin`.
-To build and run this example run:
+The above code is made available in the repository as `example.odin`.
+It can be build and run using the following command:
 
 ```bash
-make run
+make example
 ```
 
 Which is roughly equivalent to:
 ```bash
-odin run . -disable-assert -no-bounds-check -o:speed
+odin run ./example.odin -file -disable-assert -no-bounds-check -o:speed
+```
+
+or for a debug build and run:
+
+```bash
+make example-debug
+```
+
+Which is roughly equivalent to:
+```bash
+odin run ./example.odin -file -debug
+```
+
+## Advanced Example
+
+This repository also has a more advanced example file: `example2.odin`.
+To build and run this example run:
+
+```bash
+make example2
+```
+
+Which is roughly equivalent to:
+```bash
+odin run ./example2.odin -file -disable-assert -no-bounds-check -o:speed
 ```
 
 
 or for a debug build and run:
 
 ```bash
-make debug
+make example2-debug
 ```
 
 Which is roughly equivalent to:
 ```bash
-odin run . -debug
+odin run ./example2.odin -file -debug
 ```
 
 

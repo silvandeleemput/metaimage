@@ -26,8 +26,14 @@ jobs:
     - name: Run tests
       run: make test
 
-    - name: Run example (debug)
-      run: make debug
-
     - name: Run example
-      run: make run
+      run: make example
+
+    - name: Run example (debug)
+      run: make example-debug
+
+    - name: Run example2
+      run: make example2
+
+    - name: Run example2 (debug)
+      run: make example2-debug
