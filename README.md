@@ -2,12 +2,13 @@
 
 ![CI MetaImage](https://github.com/silvandeleemput/metaimage/actions/workflows/ci.yml/badge.svg?branch=main)
 
-* Version: v1.0.0,
+* Version: v1.0.0
 * Build and tested with: ODIN dev-2025-03
+* MIT license
 
 A simple and lightweight Odin lang library for reading and writing the ITK MetaImage file format. The library implements a small subset of the ITK MetaIO features with a strong focus on MetaImage objects.
 
-ITK MetaImage documentation:
+ITK MetaImage documentation: \
 https://itk.org/Wiki/ITK/MetaIO/Documentation#MetaImage
 
 Odin Programming Language: \
@@ -15,7 +16,7 @@ https://odin-lang.org/
 
 
 ## Features
-* A single file package which implements reading and writing (.mha) and (.mhd/.raw/.zraw) MetaImages
+* A single file package that implements reading and writing (.mha) and (.mhd/.raw/.zraw) MetaImages
 * Support for zlib compression/decompression using vendor:zlib with customization options using metaio.ZLIBCompressionOptions struct
 * Support for file and stream IO
 * Support for metadata in a string:string dictionary (img.MetaData)
@@ -23,7 +24,9 @@ https://odin-lang.org/
 
 ## Disclaimer
 
-This is my first Odin project which I created in my spare time to learn Odin and low-level programming and is inteded to be used in other projects. Suggestions or improvements are welcome. Although the main functionality of the library is covered by tests, use at your own risk!
+This project began as a learning exercise in Odin and low-level programming, with the goal of creating a lightweight library for working efficiently with MetaImages—without the need for ITK/SimpleITK bindings. While I’m pleased with the results, I welcome feedback, suggestions, and improvements.
+
+The library’s core features are covered by tests; however, it is provided as is, and you should use it at your own risk.
 
 ### Limitations
 * No support for MetaImage files with multiple external data files, i.e. ElementDataFile can either be LOCAL or a filename pointing to a single data file (.raw/.zraw)
@@ -42,7 +45,7 @@ Only Odin is required, the rest is optional
 
 ## Quick start
 
-To include the library in your project just copy the `metaimage` package directory containing the `metaimage.odin` file into your project and import the package like so:
+To include the library in your project, copy the `metaimage` package directory containing the `metaimage.odin` file into your project and import the package like so:
 
 ```odin
 import "metaimage"
@@ -52,7 +55,7 @@ import "metaimage"
 
 To load an image use `metaimage.read`. To write an image use `metaimage.write`. Small test MetaImage files (.mha/.mhd) can be found in this repository under `./tests/res`.
 
-The following example demonstrates both:
+The following code example demonstrates both reading and writing:
 
 ```odin
 package example
@@ -89,7 +92,7 @@ main :: proc () {
     // Do something with the actual image data
     // img.Data
 
-    // Write image to another file
+    // Write the image to another file
     assert(
         input_image_filename != output_image_filename,
         "output filename is the same as the input filename, this would overwrite the source file!"
