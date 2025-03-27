@@ -9,7 +9,7 @@
 *    with customization options using metaio.ZLIBCompressionOptions struct
 *  - Support for file and stream IO
 *  - Support for metadata in a string:string dictionary (img.MetaData)
-*  - Tested with tests for core functionality under Windows and Linux
+*  - Tested for Windows and Linux
 *
 * LIMITATIONS
 *  - No support for MetaImage files with multiple external data files,
@@ -34,7 +34,6 @@
 *     - SequenceID
 *     - ElementMin
 *     - ElementMax
-*
 *
 *************************************************************************************/
 
@@ -208,7 +207,7 @@ FAST_COMPRESSION_OPTIONS :: ZLIBCompressionOptions{
 }
 
 
-create_f64_array :: proc(elements_string: string, n_elements: int, allocator:= context.allocator) -> (a: []f64, error: Error) {
+create_f64_array :: proc(elements_string: string, n_elements: int, allocator:= context.allocator) -> (a: []f64, err: Error) {
     sub_values := strings.split(s=elements_string, sep=" ", allocator=context.temp_allocator) or_return
     arr := make([]f64, n_elements, allocator=allocator) or_return
     assert(len(sub_values) == n_elements)
@@ -221,7 +220,7 @@ create_f64_array :: proc(elements_string: string, n_elements: int, allocator:= c
 }
 
 
-create_u16_array :: proc(elements_string: string, n_elements: int, allocator:= context.allocator) -> (a: []u16, error: Error) {
+create_u16_array :: proc(elements_string: string, n_elements: int, allocator:= context.allocator) -> (a: []u16, err: Error) {
     sub_values := strings.split(s=elements_string, sep=" ", allocator=context.temp_allocator) or_return
     arr := mem.make([]u16, n_elements, allocator=allocator) or_return
     assert(len(sub_values) == int(n_elements))
@@ -248,7 +247,6 @@ required_data_size :: proc(img: Image) -> uint {
 
 
 init_header :: proc(img: ^Image) {
-    // TODO init this with NDims, and allocate all required memory here etc... ???
     img.ObjectType = .Image
     img.ElementNumberOfChannels = 1
     img.NDims = 3
@@ -258,7 +256,7 @@ init_header :: proc(img: ^Image) {
 }
 
 
-read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (error: Error) {
+read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.allocator) -> (err: Error) {
     file_buffer : [256] byte
 
     buffered_reader := bufio.Reader{}
@@ -339,7 +337,7 @@ read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.
 read :: proc{read_from_file, read_from_stream}
 
 
-read_from_file :: proc(filename: string, allocator := context.allocator) -> (img: Image, error: Error) {
+read_from_file :: proc(filename: string, allocator := context.allocator) -> (img: Image, err: Error) {
     // open file for reading as an io.Reader Stream
     fd := os.open(filename, os.O_RDONLY) or_return
     data_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
@@ -349,7 +347,7 @@ read_from_file :: proc(filename: string, allocator := context.allocator) -> (img
 }
 
 
-read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, error: Error) {
+read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, err: Error) {
     read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
 
     // compute required total memory for data buffer
@@ -394,7 +392,7 @@ read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", alloc
 
 
 // these functions will allocate and free memory based on the temp_allocator of the default_context
-zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
+_zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
     context = runtime.default_context()
     res, err := mem.alloc_bytes(int(size) * int(items), allocator=context.temp_allocator)
     if err != nil {
@@ -404,7 +402,7 @@ zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uI
 }
 
 
-zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
+_zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
 {
     context = runtime.default_context()
     err := mem.free(address, allocator=context.temp_allocator)
@@ -423,8 +421,8 @@ zlib_inflate_data :: proc(data: []u8, expected_output_size: uint, allocator:=con
     uncompressed_data := make([]byte, expected_output_size, allocator=allocator) or_return
 
     strm : zlib.z_stream_s
-    strm.zalloc = zlib_alloc_func // use nil for default zlib alloc func
-    strm.zfree = zlib_free_func // use nil for default zlib free func
+    strm.zalloc = _zlib_alloc_func // use nil for default zlib alloc func
+    strm.zfree = _zlib_free_func // use nil for default zlib free func
     strm.opaque = nil
     strm.avail_out = 0 // set this explicitly
 
@@ -480,8 +478,8 @@ zlib_deflate_data :: proc(data: []u8, options: ZLIBCompressionOptions = DEFAULT_
     // See for reference implementation: https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
 
     strm : zlib.z_stream_s
-    strm.zalloc = zlib_alloc_func // use nil for default zlib alloc func
-    strm.zfree = zlib_free_func // use nil for default zlib free func
+    strm.zalloc = _zlib_alloc_func // use nil for default zlib alloc func
+    strm.zfree = _zlib_free_func // use nil for default zlib free func
     strm.opaque = nil
 
     source_size := u64(len(data))
@@ -675,7 +673,7 @@ metadata_equal :: proc(a: map [string]string, b: map [string]string) -> bool {
 }
 
 
-_open_file_for_writing :: proc(filename: string) -> (fd : os.Handle, err : os.Error) {
+_open_file_for_writing :: proc(filename: string) -> (fd : os.Handle, error : os.Error) {
     mode: int = 0
     when ODIN_OS == .Linux || ODIN_OS == .Darwin {
         // 664 (owner read, write; group read, write; others read)
