@@ -1,0 +1,7 @@
+# These files should always have LF line endings on checkout.
+*.mha text eol=lf
+*.mhd text eol=lf
+
+# These files are binary
+*.raw binary
+*.zraw binary
