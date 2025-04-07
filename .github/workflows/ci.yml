@@ -38,7 +38,7 @@ jobs:
         build.bat release
         echo "Installed Odin in: $(pwd)"
         echo "$(pwd)" >> $GITHUB_PATH
-      shell: cmd
+      shell: bash
     - name: Run tests
       run: make test
       shell: cmd
