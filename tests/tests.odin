@@ -16,8 +16,10 @@ TEST_RES_DIR :: `./tests/res`
 
 TEST_COMPRESSED_MHD_FILE :: TEST_RES_DIR + `/test_001.mhd`
 TEST_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_001.mha`
+TEST_COMPRESSED_MHD_CRLF_FILE :: TEST_RES_DIR + `/test_001_crlf.mhd`
 TEST_UNCOMPRESSED_MHD_FILE :: TEST_RES_DIR + `/test_001_uncompressed.mhd`
 TEST_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_001_uncompressed.mha`
+
 
 TEST_TINY_COMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_002.mha`
 TEST_TINY_UNCOMPRESSED_MHA_FILE :: TEST_RES_DIR + `/test_002_uncompressed.mha`
@@ -45,6 +47,11 @@ test_image_read_compressed_mhd :: proc(t: ^testing.T) {
 @(test)
 test_image_read_compressed_mha :: proc(t: ^testing.T) {
     test_image_read_expected_values(t=t, test_file_name=TEST_COMPRESSED_MHA_FILE, compressed=true)
+}
+
+@(test)
+test_image_read_compressed_mhd_crlf :: proc(t: ^testing.T) {
+    test_image_read_expected_values(t=t, test_file_name=TEST_COMPRESSED_MHD_CRLF_FILE, compressed=true)
 }
 
 @(test)
@@ -211,9 +218,9 @@ test_image_read_expected_values :: proc(t: ^testing.T, test_file_name: string, c
     testing.expect(t, len(img.MetaData) == 2, fmt.aprintf("Found unexpected number of metadata %d != 2", len(img.MetaData), allocator=context.temp_allocator))
     testing.expect(t, ("AnatomicalOrientation" in img.MetaData) && img.MetaData["AnatomicalOrientation"] == "RAI", "MetaData key AnatomicalOrientation was found to be incorrect")
     testing.expect(t, ("CenterOfRotation" in img.MetaData) && img.MetaData["CenterOfRotation"] == "0 0 0", "MetaData key CenterOfRotation was found to be incorrect")
-
-    expected_element_data_file := strings.concatenate({filepath.base(test_file_name[:len(test_file_name) - 3]), (compressed ? "zraw" : "raw")}, allocator=context.temp_allocator)
-    expected_element_data_file = strings.ends_with(test_file_name, ".mha") ? "LOCAL" : expected_element_data_file
+    test_file_name2, _ := strings.replace(test_file_name, "_crlf", "", -1, allocator=context.temp_allocator)
+    expected_element_data_file := strings.concatenate({filepath.base(test_file_name2[:len(test_file_name2) - 3]), (compressed ? "zraw" : "raw")}, allocator=context.temp_allocator)
+    expected_element_data_file = strings.ends_with(test_file_name2, ".mha") ? "LOCAL" : expected_element_data_file
     testing.expect(t, img.ElementDataFile == expected_element_data_file, fmt.aprintf("Image ElementDataFile should be equal to `%s`", expected_element_data_file, allocator=context.temp_allocator))
 
     unexpected_values, total_voxels, total_sum : uint = 0, 0, 0

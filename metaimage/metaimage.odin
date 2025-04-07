@@ -273,10 +273,12 @@ read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.
     meta_data_map := make(map [string]string, allocator=allocator)
     img.MetaData = meta_data_map
     for img.ElementDataFile == "" {
+        // This procedure works for Linux LF and Windows CRLF, but not for MacOS CR only...
         next_line := bufio.reader_read_string(&buffered_reader, '\n', allocator=context.temp_allocator) or_return
-        splits := strings.split_n(s=next_line, n=2, sep=" = ", allocator=context.temp_allocator) or_return
-        key := splits[0]
-        value := splits[1][:len(splits[1]) - 1]  // remove \n character at the end
+        splits := strings.split_n(s=next_line, n=2, sep="=", allocator=context.temp_allocator) or_return
+        // Remove spaces / line endings etc and retrieve key/value pairs...
+        key := strings.trim_space(splits[0])
+        value := strings.trim_space(splits[1][:len(splits[1])])
         switch key {
             case "ObjectType":
                 object_type_enum, parse_ok := fmt.string_to_enum_value(ObjectType, value)

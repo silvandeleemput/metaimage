@@ -1,6 +1,9 @@
-# These files should always have LF line endings on checkout.
+# These files should always have LF line endings on checkout
 *.mha text eol=lf
 *.mhd text eol=lf
+
+# One exception file for testing
+test_001_crlf.mhd text eol=crlf
 
 # These files are binary
 *.raw binary
