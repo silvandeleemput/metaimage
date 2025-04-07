@@ -41,16 +41,11 @@ jobs:
       shell: powershell
     - name: Run tests
       run: make test
-      shell: cmd
     - name: Run example
       run: make example
-      shell: cmd
     - name: Run example (debug)
       run: make example-debug
-      shell: cmd
     - name: Run example2
       run: make example2
-      shell: cmd
     - name: Run example2 (debug)
       run: make example2-debug
-      shell: cmd
