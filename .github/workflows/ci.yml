@@ -35,7 +35,7 @@ jobs:
         git clone https://github.com/odin-lang/Odin odin
         cd odin
         git checkout dev-2025-03
-        make release-native
+        build.bat release
         echo "Installed Odin in: $(pwd)"
         echo "$(pwd)" >> $GITHUB_PATH
       shell: cmd
