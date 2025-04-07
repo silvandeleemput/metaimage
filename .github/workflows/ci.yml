@@ -1,19 +1,12 @@
 name: CI MetaImage
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+on: [push, pull_request]
 
 jobs:
-  build:
-
+  test-linux:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Install Odin
       run: |
         git clone https://github.com/odin-lang/Odin odin
@@ -22,18 +15,42 @@ jobs:
         make release-native
         echo "Installed Odin in: $(pwd)"
         echo "$(pwd)" >> $GITHUB_PATH
-
     - name: Run tests
       run: make test
-
     - name: Run example
       run: make example
-
     - name: Run example (debug)
       run: make example-debug
-
     - name: Run example2
       run: make example2
-
     - name: Run example2 (debug)
       run: make example2-debug
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Odin
+      run: |
+        git clone https://github.com/odin-lang/Odin odin
+        cd odin
+        git checkout dev-2025-03
+        make release-native
+        echo "Installed Odin in: $(pwd)"
+        echo "$(pwd)" >> $GITHUB_PATH
+      shell: cmd
+    - name: Run tests
+      run: make test
+      shell: cmd
+    - name: Run example
+      run: make example
+      shell: cmd
+    - name: Run example (debug)
+      run: make example-debug
+      shell: cmd
+    - name: Run example2
+      run: make example2
+      shell: cmd
+    - name: Run example2 (debug)
+      run: make example2-debug
+      shell: cmd
