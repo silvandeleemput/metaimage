@@ -36,6 +36,9 @@ jobs:
         cd odin
         git checkout dev-2025-03
         build.bat release
+      shell: cmd
+    - name: Add executable to path
+        cd odin
         echo "Installed Odin in: $((Get-Location).Path)"
         echo (Get-Location).Path | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       shell: powershell
