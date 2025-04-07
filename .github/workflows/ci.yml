@@ -39,7 +39,7 @@ jobs:
         cd odin
         git checkout $ODIN_VERSION
         .\build.bat release
-      shell: cmd
+      shell: bash
     - name: Install path references
       run: |
         cd odin
