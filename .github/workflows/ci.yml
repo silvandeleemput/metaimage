@@ -33,13 +33,13 @@ jobs:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Download Odin
+    - name: Download Odin and set to correct version
       run: |
         git clone https://github.com/odin-lang/Odin odin
         cd odin
         git checkout $ODIN_VERSION
       shell: bash
-    - name: Install Odin
+    - name: Install Odin and add to path
       run: |
         cd odin
         .\build.bat release
