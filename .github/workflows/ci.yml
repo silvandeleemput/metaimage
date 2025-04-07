@@ -36,6 +36,10 @@ jobs:
         cd odin
         git checkout dev-2025-03
         build.bat release
+      shell: cmd
+    - name: add working directory
+      run: |
+        cd odin
         echo "Installed Odin in: $(pwd)"
         echo "$(pwd)" >> $GITHUB_PATH
       shell: bash
