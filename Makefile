@@ -7,6 +7,8 @@ else
 	EXTRA_OPTS =
 endif
 
+all: test example example-debug example2 example2-debug
+
 example:
 	odin run ./example.odin -file -disable-assert -no-bounds-check -o:speed $(SHARED_OPTS) $(EXTRA_OPTS) -out:./metaimage_example$(EXT)
 
@@ -21,3 +23,9 @@ example2-debug:
 
 test:
 	odin test ./tests $(SHARED_OPTS) $(EXTRA_OPTS) -out:./metaimage_tests$(EXT)
+
+clean:
+	rm -f ./output_image.mha
+	rm -f ./metaimage_*$(EXT)
+
+.PHONY: clean all
