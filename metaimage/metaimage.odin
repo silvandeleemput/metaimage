@@ -183,15 +183,32 @@ Error :: union {
 }
 
 
+ZLIBMemoryOptions :: struct {
+    alloc_proc: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf,
+    free_proc: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
+}
+
+
 ZLIBCompressionOptions :: struct {
+    using mem_opts: ZLIBMemoryOptions,
     level : c.int,
     memLevel : c.int,
     windowBits : c.int,
     strategy : c.int,
 }
 
+ZLIBDecompressionOptions :: ZLIBMemoryOptions
+
+
+DEFAULT_DECOMPRESSION_OPTIONS :: ZLIBDecompressionOptions{
+    alloc_proc = _zlib_alloc_proc,
+    free_proc = _zlib_free_proc,
+}
+
 
 DEFAULT_COMPRESSION_OPTIONS :: ZLIBCompressionOptions{
+    alloc_proc = _zlib_alloc_proc,
+    free_proc = _zlib_free_proc,
     level = zlib.DEFAULT_COMPRESSION,
     memLevel = 8,
     windowBits = 15, // only deflate zlib (default)
@@ -200,6 +217,8 @@ DEFAULT_COMPRESSION_OPTIONS :: ZLIBCompressionOptions{
 
 
 FAST_COMPRESSION_OPTIONS :: ZLIBCompressionOptions{
+    alloc_proc = _zlib_alloc_proc,
+    free_proc = _zlib_free_proc,
     level = zlib.BEST_SPEED,
     memLevel = 8,
     windowBits = 15, // only deflate zlib (default)
@@ -339,18 +358,18 @@ read_header :: proc(img: ^Image, reader_stream: io.Reader, allocator := context.
 read :: proc{read_from_file, read_from_stream}
 
 
-read_from_file :: proc(filename: string, allocator := context.allocator) -> (img: Image, err: Error) {
+read_from_file :: proc(filename: string, decompression_options: ZLIBDecompressionOptions = DEFAULT_DECOMPRESSION_OPTIONS, allocator := context.allocator, meta_data_allocator := context.allocator, temp_allocator := context.temp_allocator) -> (img: Image, err: Error) {
     // open file for reading as an io.Reader Stream
     fd := os.open(filename, os.O_RDONLY) or_return
-    data_dir := filepath.dir(path=filename, allocator=context.temp_allocator)
+    data_dir := filepath.dir(path=filename, allocator=temp_allocator)
     reader_stream : io.Reader = os.stream_from_handle(fd=fd)
     defer io.close(reader_stream) // this also closes the file handle
-    return read_from_stream(reader_stream=reader_stream, data_dir=data_dir, allocator=allocator)
+    return read_from_stream(reader_stream=reader_stream, data_dir=data_dir, decompression_options=decompression_options, allocator=allocator, meta_data_allocator=meta_data_allocator, temp_allocator=temp_allocator)
 }
 
 
-read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", allocator := context.allocator) -> (img: Image, err: Error) {
-    read_header(img=&img, reader_stream=reader_stream, allocator=allocator) or_return
+read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", decompression_options: ZLIBDecompressionOptions = DEFAULT_DECOMPRESSION_OPTIONS, allocator := context.allocator, meta_data_allocator := context.allocator, temp_allocator := context.temp_allocator) -> (img: Image, err: Error) {
+    read_header(img=&img, reader_stream=reader_stream, allocator=meta_data_allocator) or_return
 
     // compute required total memory for data buffer
     total_bytes_required := required_data_size(img)
@@ -359,9 +378,9 @@ read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", alloc
         if img.CompressedData {
             // use zlib to decompress
             data_buffer_size := io.size(reader_stream) or_return // how much bytes left ?
-            data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
+            data_encoded_buffer := make([]u8, data_buffer_size, temp_allocator) or_return
             io.read(s=reader_stream, p=data_encoded_buffer[:]) or_return
-            inflated_data := zlib_inflate_data(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
+            inflated_data := zlib_inflate_data(data=data_encoded_buffer, expected_output_size=total_bytes_required, options=decompression_options, allocator=allocator) or_return
             img.Data = inflated_data
         } else {
             // allocate memory for buffer and read everything in one go
@@ -371,16 +390,16 @@ read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", alloc
         }
     } else {
         // try to open external file to read the data from
-        data_filename := fmt.aprintf("%s/%s", data_dir, img.ElementDataFile, allocator=context.temp_allocator)
+        data_filename := fmt.aprintf("%s/%s", data_dir, img.ElementDataFile, allocator=temp_allocator)
         fd_data := os.open(data_filename, os.O_RDONLY) or_return
         defer os.close(fd_data)
 
         if img.CompressedData {
             // use zlib to decompress
             data_buffer_size := os.file_size(fd_data) or_return
-            data_encoded_buffer := make([]u8, data_buffer_size, context.temp_allocator) or_return
+            data_encoded_buffer := make([]u8, data_buffer_size, temp_allocator) or_return
             os.read(fd=fd_data, data=data_encoded_buffer) or_return
-            inflated_data := zlib_inflate_data(data=data_encoded_buffer, expected_output_size=total_bytes_required) or_return
+            inflated_data := zlib_inflate_data(data=data_encoded_buffer, expected_output_size=total_bytes_required, options=decompression_options, allocator=allocator) or_return
             img.Data = inflated_data
         } else {
             // allocate memory for buffer and read everything in one go
@@ -393,8 +412,8 @@ read_from_stream :: proc(reader_stream: io.Reader, data_dir: string = ".", alloc
 }
 
 
-// these functions will allocate and free memory based on the temp_allocator of the default_context
-_zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
+// these procedures will allocate and free memory based on the temp_allocator of the default_context
+_zlib_alloc_proc :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.uInt) -> zlib.voidpf {
     context = runtime.default_context()
     res, err := mem.alloc_bytes(int(size) * int(items), allocator=context.temp_allocator)
     if err != nil {
@@ -404,7 +423,7 @@ _zlib_alloc_func :: proc "c" (opaque: zlib.voidp, items: zlib.uInt, size: zlib.u
 }
 
 
-_zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
+_zlib_free_proc :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
 {
     context = runtime.default_context()
     err := mem.free(address, allocator=context.temp_allocator)
@@ -415,7 +434,7 @@ _zlib_free_func :: proc "c" (opaque: zlib.voidp, address: zlib.voidpf)
 }
 
 
-zlib_inflate_data :: proc(data: []u8, expected_output_size: uint, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
+zlib_inflate_data :: proc(data: []u8, expected_output_size: uint, options: ZLIBDecompressionOptions = DEFAULT_DECOMPRESSION_OPTIONS, allocator:=context.allocator) -> (inflated_data: []u8, err: Error) {
     // Using vendor zlib here, as it is way faster than the compress.zlib odin version
     // Using vender zlib we can also skip the Adler32 checksum, which is very time consuming for large files
     // We implement chunk size buffering like in ITK to prevent zlib issues with 32 bit c.uint and c.ulong on very large files...
@@ -423,8 +442,8 @@ zlib_inflate_data :: proc(data: []u8, expected_output_size: uint, allocator:=con
     uncompressed_data := make([]byte, expected_output_size, allocator=allocator) or_return
 
     strm : zlib.z_stream_s
-    strm.zalloc = _zlib_alloc_func // use nil for default zlib alloc func
-    strm.zfree = _zlib_free_func // use nil for default zlib free func
+    strm.zalloc = options.alloc_proc // use nil for default zlib alloc func
+    strm.zfree = options.free_proc // use nil for default zlib free func
     strm.opaque = nil
     strm.avail_out = 0 // set this explicitly
 
@@ -480,8 +499,8 @@ zlib_deflate_data :: proc(data: []u8, options: ZLIBCompressionOptions = DEFAULT_
     // See for reference implementation: https://github.com/Kitware/MetaIO/blob/56c9257467fa901e51e67ca5934711869ed84e49/src/metaUtils.cxx#L714
 
     strm : zlib.z_stream_s
-    strm.zalloc = _zlib_alloc_func // use nil for default zlib alloc func
-    strm.zfree = _zlib_free_func // use nil for default zlib free func
+    strm.zalloc = options.alloc_proc // use nil for default zlib alloc func
+    strm.zfree = options.free_proc // use nil for default zlib free func
     strm.opaque = nil
 
     source_size := u64(len(data))
@@ -732,15 +751,15 @@ write_to_file :: proc(img: Image, filename: string, compression: bool = false, c
 }
 
 
-destroy :: proc(img: Image, allocator:=context.allocator) {
-    delete(img.DimSize, allocator=allocator)
-    delete(img.TransformMatrix, allocator=allocator)
-    delete(img.ElementSpacing, allocator=allocator)
-    delete(img.Offset, allocator=allocator)
-    delete(img.ElementDataFile, allocator=allocator)
+destroy :: proc(img: Image, allocator:=context.allocator, meta_data_allocator:=context.allocator) {
+    delete(img.DimSize, allocator=meta_data_allocator)
+    delete(img.TransformMatrix, allocator=meta_data_allocator)
+    delete(img.ElementSpacing, allocator=meta_data_allocator)
+    delete(img.Offset, allocator=meta_data_allocator)
+    delete(img.ElementDataFile, allocator=meta_data_allocator)
     for k, v in img.MetaData {
-        delete(k, allocator=allocator)
-        delete(v, allocator=allocator)
+        delete(k, allocator=meta_data_allocator)
+        delete(v, allocator=meta_data_allocator)
     }
     delete(img.MetaData)
     delete(img.Data, allocator=allocator)
