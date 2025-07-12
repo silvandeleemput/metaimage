@@ -1,6 +1,6 @@
 /**********************************************************************************
 *
-* MetaImage v1.0.1 - An Odin package for reading and writing ITK MetaImage files
+* MetaImage v1.1.0 - An Odin package for reading and writing ITK MetaImage files
 *
 * FEATURES
 *  - A single file package which implements reading and writing
@@ -62,9 +62,9 @@ import "vendor:zlib"
 //
 // See https://semver.org/
 VERSION_MAJOR :: 1
-VERSION_MINOR :: 0
-VERSION_PATCH :: 1
-VERSION :: "1.0.1"
+VERSION_MINOR :: 1
+VERSION_PATCH :: 0
+VERSION :: "1.1.0"
 
 
 ObjectType :: enum u8 {

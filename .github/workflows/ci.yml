@@ -3,7 +3,7 @@ name: CI MetaImage
 on: [push, pull_request]
 
 env:
-  ODIN_VERSION: "dev-2025-03"
+  ODIN_VERSION: "dev-2025-06"
 
 jobs:
   test-linux:

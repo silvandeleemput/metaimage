@@ -2,8 +2,8 @@
 
 ![CI MetaImage](https://github.com/silvandeleemput/metaimage/actions/workflows/ci.yml/badge.svg?branch=main)
 
-* Version: v1.0.1
-* Build and tested with: ODIN dev-2025-03
+* Version: v1.1.0
+* Build and tested with: ODIN dev-2025-06
 * MIT license
 
 A simple and lightweight Odin lang library for reading and writing the ITK MetaImage file format. The library implements a small subset of the ITK MetaIO features with a strong focus on MetaImage objects.
@@ -17,7 +17,7 @@ https://odin-lang.org/
 
 ## Features
 * A single file package that implements reading and writing (.mha) and (.mhd/.raw/.zraw) MetaImages
-* Support for zlib compression/decompression using vendor:zlib with customization options using metaio.ZLIBCompressionOptions struct
+* Support for zlib compression/decompression using vendor:zlib with customization options using metaio.ZLIBCompressionOptions/metaio.ZLIBDecompressionOptions structs
 * Support for file and stream IO
 * Support for metadata in a string:string dictionary (img.MetaData)
 * Tested for Windows and Linux (using CI)
